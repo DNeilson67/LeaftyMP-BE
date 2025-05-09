@@ -20,9 +20,14 @@ This repository contains the backend code for the Leafty project, built using Py
    git clone https://github.com/WADSFinalProject/Leafty-BE.git
 
 ## Usage
-1. Run the development server:
-    ```sh
+1. Install dependecies:
+  ```sh
+  pip install -r requirements.txt
+ ```
+2. Run the development server:
+   ```sh
     uvicorn main:app --reload
+    ```
 
 ## Promo Video
 
