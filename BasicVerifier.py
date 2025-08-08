@@ -29,7 +29,8 @@ class BasicVerifier(SessionVerifier[UUID, SessionData]):
 
     @property
     def auto_error(self):
-        return self._auto_error
+        # return self._auto_error
+        raise HTTPException(status_code=403, detail="Access Denied.")
 
     @property
     def auth_http_exception(self):

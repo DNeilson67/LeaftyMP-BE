@@ -1,5 +1,5 @@
 import bcrypt
-from sqlalchemy import cast, Date, and_
+from sqlalchemy import cast, Date, and_, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta    
@@ -9,6 +9,8 @@ from typing import List, Optional
 import models
 import schemas
 import uuid
+from sqlalchemy.orm import aliased, joinedload, selectinload
+from sqlalchemy import union_all, select, literal_column
 
 #otp
 def create_otp(db: Session, otp: schemas.OTPCreate):
@@ -961,34 +963,55 @@ def patch_centra_base_settings(
     db.refresh(centra_setting_detail)  # Refresh the object after commit to get the updated values
     return centra_setting_detail
 
-
-# MarketShipment
-def create_market_shipment(db: Session, market_shipment: schemas.MarketShipmentCreate):
-    # Convert UUIDs to strings before querying
+def create_market_shipment(db: Session, market_shipment: schemas.MarketShipmentCreate, session_data: schemas.SessionData):
     centra_id_str = str(market_shipment.CentraID)
-    customer_id_str = str(market_shipment.CustomerID)
+    customer_id_str = str(session_data.UserID)
 
-    # Validate that the CentraID user has the "Centra" role
+    # Validate Centra user
     centra_user = db.query(models.User).filter(models.User.UserID == centra_id_str).first()
-    if not centra_user or centra_user.RoleID != 1:  # Assuming RoleID 1 is for "Centra"
+    if not centra_user or centra_user.RoleID != 1:
         raise HTTPException(status_code=400, detail="CentraID must reference a user with the 'Centra' role.")
 
-    # Validate that the CustomerID user has the "Customer" role
+    # Validate Customer user
     customer_user = db.query(models.User).filter(models.User.UserID == customer_id_str).first()
-    if not customer_user or customer_user.RoleID != 5:  # Assuming RoleID 5 is for "Customer"
+    if not customer_user or customer_user.RoleID != 5:
         raise HTTPException(status_code=400, detail="CustomerID must reference a user with the 'Customer' role.")
 
+    # Step 1: Create Transaction
+    transaction_id = str(uuid.uuid4())
+    db_transaction = models.Transaction(
+        TransactionID=transaction_id,
+        CustomerID = customer_id_str
+    )
+    db.add(db_transaction)
+    db.commit()
+    db.refresh(db_transaction)
+
+    # Step 2: Create SubTransaction linked to the Transaction
+    db_sub_transaction = models.SubTransaction(
+        TransactionID=transaction_id,
+        CentraID=market_shipment.CentraID  # Moved CentraID to SubTransaction
+    )
+    db.add(db_sub_transaction)
+    db.commit()
+    db.refresh(db_sub_transaction)
+
+    # Step 3: Create MarketShipment linked to the SubTransaction
     db_market_shipment = models.MarketShipment(
-        CentraID=market_shipment.CentraID,
-        CustomerID=market_shipment.CustomerID,
-        DryLeavesID=market_shipment.DryLeavesID,
-        PowderID=market_shipment.PowderID,
-        status=market_shipment.status
+        SubTransactionID=db_sub_transaction.SubTransactionID,
+        ProductTypeID=market_shipment.ProductTypeID,
+        ProductID=market_shipment.ProductID,
+        Price=market_shipment.Price,
+        InitialPrice=market_shipment.InitialPrice,
     )
     db.add(db_market_shipment)
     db.commit()
     db.refresh(db_market_shipment)
-    return db_market_shipment
+
+    return {
+        "TransactionID": transaction_id
+    }
+
 
 
 def get_market_shipments(db: Session, skip: int = 0, limit: int = 10):
@@ -997,50 +1020,11 @@ def get_market_shipments(db: Session, skip: int = 0, limit: int = 10):
 def get_market_shipment_by_id(db: Session, market_shipment_id: int):
     return db.query(models.MarketShipment).filter(models.MarketShipment.MarketShipmentID == market_shipment_id).first()
 
-def update_market_shipment(db: Session, market_shipment_id: int, market_shipment_update: schemas.MarketShipmentUpdate):
-    db_market_shipment = db.query(models.MarketShipment).filter(models.MarketShipment.MarketShipmentID == market_shipment_id).first()
-    if not db_market_shipment:
-        return None
-
-    # Validate if CentraID is being updated
-    if market_shipment_update.CentraID is not None:
-        centra_user = db.query(models.User).filter(models.User.UserID == market_shipment_update.CentraID).first()
-        if not centra_user or centra_user.RoleID != 1:  # Assuming RoleID 1 is for "Centra"
-            raise HTTPException(status_code=400, detail="CentraID must reference a user with the 'Centra' role.")
-        db_market_shipment.CentraID = market_shipment_update.CentraID
-
-    # Validate if CustomerID is being updated
-    if market_shipment_update.CustomerID is not None:
-        customer_user = db.query(models.User).filter(models.User.UserID == market_shipment_update.CustomerID).first()
-        if not customer_user or customer_user.RoleID != 5:  # Assuming RoleID 5 is for "Customer"
-            raise HTTPException(status_code=400, detail="CustomerID must reference a user with the 'Customer' role.")
-        db_market_shipment.CustomerID = market_shipment_update.CustomerID
-
-    if market_shipment_update.DryLeavesID is not None:
-        db_market_shipment.DryLeavesID = market_shipment_update.DryLeavesID
-    if market_shipment_update.PowderID is not None:
-        db_market_shipment.PowderID = market_shipment_update.PowderID
-    if market_shipment_update.status is not None:
-        db_market_shipment.status = market_shipment_update.status
-
-    db.commit()
-    db.refresh(db_market_shipment)
-    return db_market_shipment
-
-def delete_market_shipment(db: Session, market_shipment_id: int):
-    db_market_shipment = db.query(models.MarketShipment).filter(models.MarketShipment.MarketShipmentID == market_shipment_id).first()
-    if db_market_shipment:
-        db.delete(db_market_shipment)
-        db.commit()
-        return True
-    return False
-
-# Transaction
-# SubTransaction
 def create_subtransaction(db: Session, subtransaction: schemas.SubTransactionCreate):
     db_subtransaction = models.SubTransaction(
-        MarketShipmentID=subtransaction.MarketShipmentID,
-        status=subtransaction.status
+        TransactionID=subtransaction.TransactionID,  # Reference Transaction
+        CentraID=subtransaction.CentraID,  # Move CentraID to SubTransaction
+        SubTransactionStatus=subtransaction.status
     )
     db.add(db_subtransaction)
     db.commit()
@@ -1057,13 +1041,14 @@ def update_subtransaction(db: Session, subtransaction_id: int, subtransaction_up
     db_subtransaction = db.query(models.SubTransaction).filter(models.SubTransaction.SubTransactionID == subtransaction_id).first()
     if not db_subtransaction:
         return None
-    if subtransaction_update.MarketShipmentID is not None:
-        db_subtransaction.MarketShipmentID = subtransaction_update.MarketShipmentID
+    if subtransaction_update.CentraID is not None:
+        db_subtransaction.CentraID = subtransaction_update.CentraID  # Update CentraID here
     if subtransaction_update.status is not None:
-        db_subtransaction.status = subtransaction_update.status
+        db_subtransaction.SubTransactionStatus = subtransaction_update.status
     db.commit()
     db.refresh(db_subtransaction)
     return db_subtransaction
+
 
 def delete_subtransaction(db: Session, subtransaction_id: int):
     db_subtransaction = db.query(models.SubTransaction).filter(models.SubTransaction.SubTransactionID == subtransaction_id).first()
@@ -1073,43 +1058,255 @@ def delete_subtransaction(db: Session, subtransaction_id: int):
         return True
     return False
 
-
-# Transaction
+# --- Create Transaction ---
 def create_transaction(db: Session, transaction: schemas.TransactionCreate):
     db_transaction = models.Transaction(
-        SubTransactionID=transaction.SubTransactionID,
-        status=transaction.status
+        TransactionID=str(uuid.uuid4()),
+        CustomerID=str(transaction.CustomerID),
+        TransactionStatus=transaction.status or "pending"
     )
     db.add(db_transaction)
     db.commit()
     db.refresh(db_transaction)
     return db_transaction
 
+
+def create_single_transaction_by_customer(db: Session, market_shipment: schemas.MarketShipmentCreate, session_data: schemas.SessionData):
+    centra_id_str = str(market_shipment.CentraID)
+    customer_id_str = str(session_data.UserID)
+
+    # Validate Centra user
+    centra_user = db.query(models.User).filter(models.User.UserID == centra_id_str).first()
+    if not centra_user or centra_user.RoleID != 1:
+        raise HTTPException(status_code=400, detail="CentraID must reference a user with the 'Centra' role.")
+
+    # Validate Customer user
+    customer_user = db.query(models.User).filter(models.User.UserID == customer_id_str).first()
+    if not customer_user or customer_user.RoleID != 5:
+        raise HTTPException(status_code=400, detail="CustomerID must reference a user with the 'Customer' role.")
+
+    # Step 1: Create Transaction
+    transaction_id = str(uuid.uuid4())
+    db_transaction = models.Transaction(
+        TransactionID=transaction_id,
+        CustomerID = customer_id_str
+    )
+    db.add(db_transaction)
+    db.commit()
+    db.refresh(db_transaction)
+
+    # Step 2: Create SubTransaction linked to the Transaction
+    db_sub_transaction = models.SubTransaction(
+        TransactionID=transaction_id,
+        CentraID=market_shipment.CentraID  # Moved CentraID to SubTransaction
+    )
+    db.add(db_sub_transaction)
+    db.commit()
+    db.refresh(db_sub_transaction)
+
+    # Step 3: Create MarketShipment linked to the SubTransaction
+    db_market_shipment = models.MarketShipment(
+        SubTransactionID=db_sub_transaction.SubTransactionID,
+        ProductTypeID=market_shipment.ProductTypeID,
+        ProductID=market_shipment.ProductID,
+        Price=market_shipment.Price,
+        InitialPrice=market_shipment.InitialPrice,
+    )
+    db.add(db_market_shipment)
+    db.commit()
+    db.refresh(db_market_shipment)
+
+    return {
+        "TransactionID": transaction_id
+    }
+
+
+# --- Get All Transactions ---
 def get_transactions(db: Session, skip: int = 0, limit: int = 10):
     return db.query(models.Transaction).offset(skip).limit(limit).all()
 
-def get_transaction_by_id(db: Session, transaction_id: int):
-    return db.query(models.Transaction).filter(models.Transaction.TransactionID == transaction_id).first()
+def get_transactions_by_customer(db: Session, skip: int = 0, limit: int = 10, session_data: schemas.SessionData = None):
+    CustomerID = str(session_data.UserID)
 
-def update_transaction(db: Session, transaction_id: int, transaction_update: schemas.TransactionUpdate):
+    # Query to fetch necessary fields, including Centra's Username and ProductName
+    transactions = (
+        db.query(
+            models.Transaction.TransactionID,
+            models.Transaction.TransactionStatus,
+            models.Transaction.CreatedAt,
+            models.Transaction.ExpirationAt,
+            models.Transaction.CustomerID,
+            models.SubTransaction.SubTransactionID,
+            models.SubTransaction.SubTransactionStatus,
+            models.SubTransaction.CentraID,  # Fetch CentraID to get Centra's Username
+            models.MarketShipment.ProductID,
+            models.MarketShipment.InitialPrice,
+            models.MarketShipment.Price,
+            models.MarketShipment.ShipmentStatus,
+            models.Products.ProductName.label("ProductName")  # Fetch ProductName from the Product model
+        )
+        .join(models.SubTransaction, models.Transaction.TransactionID == models.SubTransaction.TransactionID)
+        .join(models.MarketShipment, models.SubTransaction.SubTransactionID == models.MarketShipment.SubTransactionID)
+        .join(models.Products, models.MarketShipment.ProductTypeID == models.Products.ProductID)
+        .join(models.User, models.SubTransaction.CentraID == models.User.UserID)  # Join User table to get Centra's Username
+        .filter(models.Transaction.CustomerID == CustomerID)
+        .order_by(models.Transaction.ExpirationAt.desc())  # Order by CreatedAt descending
+        .limit(limit)
+        .offset(skip)
+        .all()
+    )
+    
+    if transactions is None:
+        raise HTTPException(status_code=404, detail="No transactions found for this customer")
+
+    # Format the results into the desired structure
+    result = []
+    for transaction in transactions:
+        # Find the associated Centra's Username
+        centra_username = db.query(models.User.Username).filter(models.User.UserID == transaction.CentraID).first()        
+
+        # Find the weight of the product
+        if transaction.ProductName == "Wet Leaves":
+            product_weight = db.query(models.WetLeaves.Weight).filter(models.WetLeaves.WetLeavesID == transaction.ProductID).first()
+        elif transaction.ProductName == "Dry Leaves":
+            product_weight = db.query(models.DryLeaves.Processed_Weight).filter(models.DryLeaves.DryLeavesID == transaction.ProductID).first()
+        elif transaction.ProductName == "Powder":
+            product_weight = db.query(models.Flour.Flour_Weight).filter(models.Flour.FlourID == transaction.ProductID).first()
+        else:
+            raise HTTPException(status_code=400, detail="Invalid ProductName")
+
+        transaction_data = {
+            "TransactionID": transaction.TransactionID,
+            "TransactionStatus": transaction.TransactionStatus,
+            "CreatedAt": transaction.CreatedAt.isoformat(),
+            "ExpirationAt": transaction.ExpirationAt.isoformat() if transaction.ExpirationAt else None,
+            "sub_transactions": [{
+                "SubTransactionID": transaction.SubTransactionID,
+                "CentraUsername": centra_username.Username if centra_username else None,
+                "SubTransactionStatus": transaction.SubTransactionStatus,
+                "market_shipments": [{
+                    "ProductID": transaction.ProductID,
+                    "InitialPrice": transaction.InitialPrice,
+                    "Price": transaction.Price,
+                    "Weight": product_weight[0] if product_weight else None,  # Include weight based on ProductName
+                    "ShipmentStatus": transaction.ShipmentStatus,
+                    "ProductName": transaction.ProductName  # Include ProductName
+                }]
+            }]
+        }
+        
+        result.append(transaction_data)
+
+    return result
+
+# --- Get Transaction by ID (basic) ---
+def get_transaction_by_id(db: Session, transaction_id: UUID):
+    return db.query(models.Transaction).filter(models.Transaction.TransactionID == str(transaction_id)).first()
+
+def get_transaction_details_by_id(db: Session, transaction_id: UUID, session_data: schemas.SessionData = None, skip: int = 0, limit: int = 10):
+    CustomerID = str(session_data.UserID)
+
+    # Query to fetch necessary fields, including Centra's Username and ProductName
+    transaction = (
+        db.query(
+            models.Transaction.TransactionID,
+            models.Transaction.TransactionStatus,
+            models.Transaction.CreatedAt,
+            models.Transaction.ExpirationAt,
+            models.Transaction.CustomerID,
+            models.SubTransaction.SubTransactionID,
+            models.SubTransaction.SubTransactionStatus,
+            models.SubTransaction.CentraID,  # Fetch CentraID to get Centra's Username
+            models.MarketShipment.ProductID,
+            models.MarketShipment.InitialPrice,
+            models.MarketShipment.Price,
+            models.MarketShipment.ShipmentStatus,
+            models.Products.ProductName.label("ProductName")  # Fetch ProductName from the Product model
+        )
+        .join(models.SubTransaction, models.Transaction.TransactionID == models.SubTransaction.TransactionID)
+        .join(models.MarketShipment, models.SubTransaction.SubTransactionID == models.MarketShipment.SubTransactionID)
+        .join(models.Products, models.MarketShipment.ProductTypeID == models.Products.ProductID)
+        .join(models.User, models.SubTransaction.CentraID == models.User.UserID)  # Join User table to get Centra's Username
+        .filter(models.Transaction.CustomerID == CustomerID)
+        .filter(models.Transaction.TransactionID == str(transaction_id))
+        .limit(limit)
+        .offset(skip)
+        .first()
+    )
+    
+    if transaction is None:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    # Find the associated Centra's Username
+    centra_username = db.query(models.User.Username).filter(models.User.UserID == transaction.CentraID).first()        
+
+    # Find the weight of the product
+    if transaction.ProductName == "Wet Leaves":
+        product_weight = db.query(models.WetLeaves.Weight).filter(models.WetLeaves.WetLeavesID == transaction.ProductID).first()
+    elif transaction.ProductName == "Dry Leaves":
+        product_weight = db.query(models.DryLeaves.Processed_Weight).filter(models.DryLeaves.DryLeavesID == transaction.ProductID).first()
+    elif transaction.ProductName == "Powder":
+        product_weight = db.query(models.Flour.Flour_Weight).filter(models.Flour.FlourID == transaction.ProductID).first()
+    else:
+        raise HTTPException(status_code=400, detail="Invalid ProductName")
+
+    transaction_data = {
+        "TransactionID": transaction.TransactionID,
+        "TransactionStatus": transaction.TransactionStatus,
+        "CreatedAt": transaction.CreatedAt.isoformat(),
+        "ExpirationAt": transaction.ExpirationAt.isoformat() if transaction.ExpirationAt else None,
+        "sub_transactions": [{
+        "SubTransactionID": transaction.SubTransactionID,
+        "CentraUsername": centra_username.Username if centra_username else None,
+        "SubTransactionStatus": transaction.SubTransactionStatus,
+        "market_shipments": [{
+            "ProductID": transaction.ProductID,
+            "InitialPrice": transaction.InitialPrice,
+            "Price": transaction.Price,
+            "Weight": product_weight[0] if product_weight else None,  # Include weight based on ProductName
+            "ShipmentStatus": transaction.ShipmentStatus,
+            "ProductName": transaction.ProductName  # Include ProductName
+            }]
+        }]
+    }
+
+    return transaction_data
+
+# --- Update Transaction ---
+def update_transaction(db: Session, transaction_id: str, transaction_update: schemas.TransactionUpdate):
     db_transaction = db.query(models.Transaction).filter(models.Transaction.TransactionID == transaction_id).first()
     if not db_transaction:
         return None
-    if transaction_update.SubTransactionID is not None:
-        db_transaction.SubTransactionID = transaction_update.SubTransactionID
+
     if transaction_update.status is not None:
-        db_transaction.status = transaction_update.status
+        db_transaction.TransactionStatus = transaction_update.status
+
     db.commit()
     db.refresh(db_transaction)
     return db_transaction
 
-def delete_transaction(db: Session, transaction_id: int):
-    db_transaction = db.query(models.Transaction).filter(models.Transaction.TransactionID == transaction_id).first()
-    if db_transaction:
-        db.delete(db_transaction)
-        db.commit()
-        return True
-    return False
+def delete_transaction(db: Session, transaction_id: str):
+    db_transaction = db.query(models.Transaction).options(
+        selectinload(models.Transaction.sub_transactions)
+        .selectinload(models.SubTransaction.market_shipments)
+    ).filter(models.Transaction.TransactionID == transaction_id).first()
+
+    if not db_transaction:
+        return False
+
+    for sub_transaction in db_transaction.sub_transactions:
+        for market_shipment in sub_transaction.market_shipments:
+            db.delete(market_shipment)
+            print(f"Deleted MarketShipment ID: {market_shipment.MarketShipmentID}")
+
+        db.delete(sub_transaction)
+        print(f"Deleted SubTransaction ID: {sub_transaction.SubTransactionID}")
+
+    db.delete(db_transaction)
+    db.commit()
+    print(f"Deleted Transaction ID: {db_transaction.TransactionID}")
+    return True
+
 
 # centra finance
 def create_centra_finance(db: Session, centra_finance: schemas.CentraFinanceCreate):
@@ -1390,61 +1587,6 @@ def get_all_items(db: Session, item_type: str):
 
     return grouped_data
 
-def bulk_algorithm_by_random_centras(db: Session, item_type: str, target_weight: int):
-    all_data = get_random_items_by_centra(db, item_type, round(target_weight/1000))
-    
-    memo: dict[tuple[int, int], int] = {}
-    next: dict[tuple[int, int], tuple[int, int, bool]] = {}
-
-    def dp(weight: int, idx: int, items: list[tuple[int, str, int]]) -> int:
-        if memo.get((weight, idx), -1) != -1:
-            return memo.get((weight, idx))
-        if weight <= 0 or idx >= len(items):
-            return 0
-
-        # Decision to include the current item
-        if weight - items[idx][0] >= 0:
-            next[(weight, idx)] = (weight - items[idx][0], idx + 1, True)
-            memo[(weight, idx)] = dp(weight - items[idx][0], idx + 1, items=items) + items[idx][0]
-
-        # Decision to skip the current item
-        skip_value = dp(weight, idx + 1, items=items)
-        if memo.get((weight, idx), 0) < skip_value:
-            next[(weight, idx)] = (weight, idx + 1, False)
-            memo[(weight, idx)] = skip_value
-
-        return memo.get((weight, idx), 0)
-
-    def knapsack(target_weight: int, item_weights: dict[str, list[dict[str, int]]]):
-        items: list[tuple[int, str, int]] = []
-        memo.clear()
-        next.clear()
-        
-        # Flatten input structure into list of (weight, category, id) tuples
-        for category, weights in item_weights.items():
-            items += [(item["weight"], category, item["id"]) for item in weights]
-
-        max_value = dp(target_weight, 0, items)
-        
-        # Build choices in the same structure as input
-        choices: dict[str, list[dict[str, int]]] = {}
-        current = (target_weight, 0)
-
-        while next.get(current):
-            weight, category, item_id = items[current[1]]
-            if next[current][2]:  # If the item was included in the optimal solution
-                if category not in choices:
-                    choices[category] = []
-                choices[category].append({"id": item_id, "weight": weight})
-            current = next[current][:2]
-        
-        return max_value, choices
-    
-    max_value, choices = knapsack(target_weight, all_data)
-    
-    return max_value, choices
-
-
 def bulk_algorithm_by_random_items(db: Session, item_type: str, target_weight: int):
     all_data = get_random_items(db, item_type, round(target_weight / 25))
     
@@ -1565,3 +1707,221 @@ def bulk_algorithm_by_selected_centra(db: Session, item_type: str, target_weight
     
     return max_value, choices
 
+def get_marketplace_items(db: Session, skip: int = 0, limit: int = 15):
+    # Queries for individual products
+    wet = db.query(
+        models.WetLeaves.WetLeavesID.label("id"),
+        models.WetLeaves.UserID.label("user_id"),
+        models.WetLeaves.Expiration.label("expiration"),
+        models.WetLeaves.Weight.label("stock"),
+        literal_column("'Wet Leaves'").label("product_name")
+    )
+
+    dry = db.query(
+        models.DryLeaves.DryLeavesID.label("id"),
+        models.DryLeaves.UserID.label("user_id"),
+        models.DryLeaves.Expiration.label("expiration"),
+        models.DryLeaves.Processed_Weight.label("stock"),
+        literal_column("'Dry Leaves'").label("product_name")
+    )
+
+    flour = db.query(
+        models.Flour.FlourID.label("id"),
+        models.Flour.UserID.label("user_id"),
+        models.Flour.Expiration.label("expiration"),
+        models.Flour.Flour_Weight.label("stock"),
+        literal_column("'Powder'").label("product_name")
+    )
+
+    # Combine queries with UNION ALL
+    union_query = union_all(wet, dry, flour).alias("products")
+
+    # Create an alias for the User table
+    user_alias = aliased(models.User)
+
+    # Create the full select statement with join to get username
+    stmt = select(
+        union_query.c.id,
+        union_query.c.user_id,
+        user_alias.Username.label("username"),
+        union_query.c.expiration,
+        union_query.c.product_name,
+        union_query.c.stock
+    ).join(user_alias, union_query.c.user_id == user_alias.UserID
+    ).filter(
+        union_query.c.expiration > func.now()  # Filter out expired products
+    ).order_by(func.random()).offset(skip).limit(limit)
+
+    # Execute the query
+    rows = db.execute(stmt).fetchall()
+    
+    currentDate = datetime.now()
+    results = []
+
+    for row in rows:
+        source = row.product_name
+        centra_base_settings = get_centra_base_settings_by_user_id_and_items(db, row.user_id, source)
+        discount_conditions = get_centra_setting_detail_by_user_id_and_item(db, row.user_id, source)
+
+        price = centra_base_settings[0].InitialPrice if centra_base_settings else 0
+        expdayleft = (row.expiration - currentDate).days
+
+        def calculate_discounted_price(expiry_left, data, initial_price):
+            applicable = [item for item in data if expiry_left <= item.ExpDayLeft]
+            if not applicable:
+                return initial_price
+            best = min(applicable, key=lambda x: x.ExpDayLeft).DiscountRate
+            return round(initial_price - (initial_price * best / 100))
+
+        final_price = calculate_discounted_price(expdayleft, discount_conditions, price)
+
+        results.append({
+            "id": row.id,
+            "product_name": row.product_name,
+            "stock": row.stock,
+            "centra_name": row.username,
+            "initial_price": price,
+            "price": final_price,
+            "expiry_time": expdayleft
+        })
+
+    return results
+
+def get_product_details_by_product_id_and_product_name_and_username(db: Session, product_id: int, product_name: str, username: str):
+    if product_name == 'Wet Leaves':
+        product = (
+            db.query(
+                models.WetLeaves.WetLeavesID.label("id"),
+                models.WetLeaves.UserID.label("user_id"),
+                models.WetLeaves.Expiration.label("expiration"),
+                models.WetLeaves.Weight.label("weight"),
+                literal_column("'Wet Leaves'").label("product_name"),
+                models.User.Username.label("username"),
+                models.User.UserID.label("centra_id"))
+            .join(models.User, models.WetLeaves.UserID == models.User.UserID)
+            .filter(
+                models.WetLeaves.WetLeavesID == product_id,
+                models.User.Username == username
+            )
+            .first()
+        )
+
+    elif product_name == 'Dry Leaves':
+        product = (
+            db.query( models.DryLeaves.DryLeavesID.label("id"),
+                models.DryLeaves.UserID.label("user_id"),
+                models.DryLeaves.Expiration.label("expiration"),
+                models.DryLeaves.Processed_Weight.label("weight"),
+                literal_column("'Dry Leaves'").label("product_name"),
+                models.User.Username.label("username"),
+                models.User.UserID.label("centra_id"))
+            .join(models.User, models.DryLeaves.UserID == models.User.UserID)
+            .filter(
+                models.DryLeaves.DryLeavesID == product_id,
+                models.User.Username == username
+            )
+            .first()
+        )
+
+    elif product_name == 'Powder':
+        product = (
+            db.query(
+                models.Flour.FlourID.label("id"),
+                models.Flour.UserID.label("user_id"),
+                models.Flour.Expiration.label("expiration"),
+                models.Flour.Flour_Weight.label("weight"),
+                literal_column("'Powder'").label("product_name"),
+                models.User.Username.label("username"),
+                models.User.UserID.label("centra_id"))
+            .join(models.User, models.Flour.UserID == models.User.UserID)
+            .filter(
+                models.Flour.FlourID == product_id,
+                models.User.Username == username
+            )
+            .first()
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Invalid product type")
+
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    currentDate = datetime.now()
+
+    source = product.product_name
+    centra_base_settings = get_centra_base_settings_by_user_id_and_items(db, product.user_id, source)
+    discount_conditions = get_centra_setting_detail_by_user_id_and_item(db, product.user_id, source)
+
+    price = centra_base_settings[0].InitialPrice if centra_base_settings else 0
+    expdayleft = (product.expiration - currentDate).days
+
+    def calculate_discounted_price(expiry_left, data, initial_price):
+        applicable = [item for item in data if expiry_left <= item.ExpDayLeft]
+        if not applicable:
+            return initial_price
+        best = min(applicable, key=lambda x: x.ExpDayLeft).DiscountRate
+        return round(initial_price - (initial_price * best / 100))
+
+    final_price = calculate_discounted_price(expdayleft, discount_conditions, price)
+
+    return {
+        "id": product.id,
+        "product_name": product.product_name,
+        "weight": product.weight,
+        "centra_name": product.username,
+        "initial_price": price,
+        "price": final_price,
+        "expiry_time": expdayleft,
+        "centra_id": product.centra_id
+    }
+    
+def create_new_transaction(db: Session, market_shipment: schemas.MarketShipmentCreate):
+    centra_id_str = str(market_shipment.CentraID)
+    customer_id_str = str(market_shipment.CustomerID)
+
+    # Validate Centra user
+    centra_user = db.query(models.User).filter(models.User.UserID == centra_id_str).first()
+    if not centra_user or centra_user.RoleID != 1:
+        raise HTTPException(status_code=400, detail="CentraID must reference a user with the 'Centra' role.")
+
+    # Validate Customer user
+    customer_user = db.query(models.User).filter(models.User.UserID == customer_id_str).first()
+    if not customer_user or customer_user.RoleID != 5:
+        raise HTTPException(status_code=400, detail="CustomerID must reference a user with the 'Customer' role.")
+
+    # Step 1: Create Transaction (✅ now includes CustomerID)
+    transaction_id = str(uuid.uuid4())
+    db_transaction = models.Transaction(
+        TransactionID=transaction_id,
+        CustomerID=customer_id_str  # ✅ moved here
+    )
+    db.add(db_transaction)
+    db.commit()
+    db.refresh(db_transaction)
+
+    # Step 2: Create SubTransaction linked to the Transaction
+    db_sub_transaction = models.SubTransaction(
+        TransactionID=transaction_id
+    )
+    db.add(db_sub_transaction)
+    db.commit()
+    db.refresh(db_sub_transaction)
+
+    # Step 3: Create MarketShipment linked to the SubTransaction (✅ no more CustomerID here)
+    db_market_shipment = models.MarketShipment(
+        SubTransactionID=db_sub_transaction.SubTransactionID,
+        CentraID=market_shipment.CentraID,
+        ProductTypeID=market_shipment.ProductTypeID,
+        ProductID=market_shipment.ProductID,
+        Price=market_shipment.Price,
+        InitialPrice=market_shipment.InitialPrice,
+    )
+    db.add(db_market_shipment)
+    db.commit()
+    db.refresh(db_market_shipment)
+
+    return {
+        "transaction": db_transaction,
+        "sub_transaction": db_sub_transaction,
+        "market_shipment": db_market_shipment
+    }

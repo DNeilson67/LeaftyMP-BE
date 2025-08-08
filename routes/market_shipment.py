@@ -8,7 +8,7 @@ import schemas
 
 router = APIRouter()
 
-@router.post("/market_shipment/post", response_model=schemas.MarketShipment, tags=["MarketShipment"])
+@router.post("/market_shipment/post", tags=["MarketShipment"])
 def create_market_shipment(market_shipment: schemas.MarketShipmentCreate, db: Session = Depends(get_db)):
     return crud.create_market_shipment(db=db, market_shipment=market_shipment)
 

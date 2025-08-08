@@ -1,11 +1,7 @@
-from pydantic import BaseModel, UUID4, EmailStr, RootModel
+from pydantic import BaseModel, UUID4, EmailStr, RootModel, Field
 from typing import Optional, List, Dict
 
 from datetime import datetime
-
-import pydantic
-
-
 
 class GenerateOTPRequest(BaseModel):
     email: str
@@ -181,7 +177,7 @@ class SimpleFlour(BaseModel):
     initial_price: int
 
 class FlourBase(BaseModel):
-    UserID: UUID4
+    UserID: str
     DryLeavesID: int
     Flour_Weight: float
     Expiration: Optional[datetime]
@@ -333,25 +329,26 @@ class CentraSettingDetail(CentraSettingDetailBase):
 class CentraSettingDetailUpdate(BaseModel):
     DiscountRate: Optional[float] = None
     ExpDayLeft: Optional[int] = None
+# --- MarketShipment Schemas ---
 
-
-        
 class MarketShipmentBase(BaseModel):
-    CentraID: UUID4
-    CustomerID: UUID4
-    DryLeavesID: int
-    PowderID: int
-    status: str
+    CentraID: str  # Still used to assign product to a Centra
+    ProductTypeID: int
+    ProductID: int
+    Price: float
+    InitialPrice: float
+    ShipmentStatus: Optional[str] = None
 
 class MarketShipmentCreate(MarketShipmentBase):
     pass
 
 class MarketShipmentUpdate(BaseModel):
     CentraID: Optional[UUID4] = None
-    CustomerID: Optional[UUID4] = None
-    DryLeavesID: Optional[int] = None
-    PowderID: Optional[int] = None
-    status: Optional[str] = None
+    ProductTypeID: Optional[int] = None
+    ProductID: Optional[int] = None
+    Price: Optional[float] = None
+    InitialPrice: Optional[float] = None
+    ShipmentStatus: Optional[str] = None
 
 class MarketShipment(MarketShipmentBase):
     MarketShipmentID: int
@@ -359,44 +356,75 @@ class MarketShipment(MarketShipmentBase):
     class Config:
         orm_mode = True
 
+
+# --- SubTransaction Schemas ---
 class SubTransactionBase(BaseModel):
-    MarketShipmentID: int
-    status: str
+    SubTransactionStatus: str
 
 class SubTransactionCreate(SubTransactionBase):
-    pass
+    market_shipments: List[MarketShipmentCreate]
 
 class SubTransactionUpdate(BaseModel):
-    MarketShipmentID: Optional[int] = None
-    status: Optional[str] = None
+    SubTransactionStatus: Optional[str] = None
+    market_shipments: Optional[List[MarketShipmentUpdate]] = None
 
 class SubTransaction(SubTransactionBase):
     SubTransactionID: int
+    market_shipments: List[MarketShipment]
 
     class Config:
         orm_mode = True
 
-from pydantic import BaseModel
-from typing import Optional
 
-# TransactionCreate schema
+# --- Transaction Schemas ---
 class TransactionCreate(BaseModel):
-    SubTransactionID: int
-    status: str
+    CustomerID: UUID4  # ✅ Added as required input
+    TransactionStatus: Optional[str] = "pending"
+    sub_transactions: List[SubTransactionCreate]  # Can create with children
 
-# TransactionUpdate schema
 class TransactionUpdate(BaseModel):
-    SubTransactionID: Optional[int] = None
-    status: Optional[str] = None
+    TransactionStatus: Optional[str] = None
+    sub_transactions: Optional[List[SubTransactionUpdate]] = None
 
-# Transaction schema (for returning Transaction data)
 class Transaction(BaseModel):
-    TransactionID: int
-    SubTransactionID: int
-    status: str
-    
+    TransactionID: UUID4
+    CustomerID: UUID4
+    TransactionStatus: str
+    CreatedAt: datetime
+    sub_transactions: List[SubTransaction]
+
     class Config:
         orm_mode = True
+        
+class MarketShipmentDisplayBase(BaseModel):
+    ProductID: int
+    InitialPrice: float
+    Price: float
+    ShipmentStatus: str
+    Weight: float
+    ProductName: str  # The name of the product (like "Powder")
+
+    class Config:
+        orm_mode = True
+
+class SubTransactionDisplayBase(BaseModel):
+    SubTransactionStatus: str
+    CentraUsername: str
+    market_shipments: List[MarketShipmentDisplayBase]
+
+    class Config:
+        orm_mode = True
+
+class TransactionDisplayBase(BaseModel):
+    TransactionID: str  # UUID as a string
+    TransactionStatus: str
+    CreatedAt: Optional[datetime]  # Optional datetime field for creation
+    ExpirationAt: Optional[datetime]  # Optional datetime field for expiration
+    sub_transactions: List[SubTransactionDisplayBase]
+
+    class Config:
+        orm_mode = True
+
         
 class CentraFinanceBase(BaseModel):
     UserID: UUID4
@@ -471,4 +499,47 @@ class LoginRequest(BaseModel):
     Email: EmailStr
     Password: str
     
+class MarketPlaceFindItem(BaseModel):
+    product_id: int
+    product_name: str
+    username: str
 
+#biteship
+class Coordinates(BaseModel):
+    latitude: float
+    longitude: float
+
+class Item(BaseModel):
+    name: str
+    description: str
+    category: str
+    value: int
+    quantity: int
+    height: int
+    length: int
+    weight: int
+    width: int
+
+class ShipmentData(BaseModel):
+    shipper_contact_name: str
+    shipper_contact_phone: str
+    shipper_contact_email: str
+    shipper_organization: str
+    origin_contact_name: str
+    origin_contact_phone: str
+    origin_address: str
+    origin_note: str
+    origin_coordinate: Coordinates
+    destination_contact_name: str
+    destination_contact_phone: str
+    destination_contact_email: str
+    destination_address: str
+    destination_note: str
+    destination_coordinate: Coordinates
+    courier_company: str
+    courier_type: str
+    courier_insurance: int
+    delivery_type: str
+    order_note: str
+    metadata: Dict = Field(default_factory=dict)
+    items: List[Item]

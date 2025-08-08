@@ -1,7 +1,7 @@
-from sqlalchemy import CheckConstraint, Column, Integer, String, Text, ForeignKey, Float, DateTime, Enum, BigInteger, Table, func
+from datetime import datetime, timedelta
+from sqlalchemy import Boolean, CheckConstraint, Column, Integer, String, Text, ForeignKey, Float, DateTime, Enum, BigInteger, Table, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
-from sqlalchemy import Column, Integer, String, ForeignKey, UUID, Boolean
 
 Base = declarative_base()
 
@@ -146,42 +146,61 @@ class CentraSettingDetail(Base):
 
     products_templates = relationship("Products", backref="setting_details")
     
+# --- Transaction Model ---
+class Transaction(Base):
+    __tablename__ = "transactions"
+
+    TransactionID = Column(String, primary_key=True)
+    CustomerID = Column(String(36), ForeignKey('users.UserID'))
+    TransactionStatus = Column(String, default="Transaction Pending")
+    CreatedAt = Column(DateTime(timezone=True), server_default=func.now())
+    UpdatedAt = Column(DateTime(timezone=True), server_default=func.now())
+    ExpirationAt = Column(DateTime(timezone=True), default=lambda: datetime.utcnow() + timedelta(hours=3))
+
+    # Relationships
+    customer = relationship("User", backref="transactions")
+    sub_transactions = relationship("SubTransaction", back_populates="transaction", cascade="all, delete-orphan")
+
+
+# --- SubTransaction Model ---
+class SubTransaction(Base):
+    __tablename__ = "sub_transactions"
+
+    SubTransactionID = Column(Integer, primary_key=True, autoincrement=True)
+    TransactionID = Column(String, ForeignKey("transactions.TransactionID"))  # ✅ fix table name
+    SubTransactionStatus = Column(String, default="pending")
+    CreatedAt = Column(DateTime(timezone=True), server_default=func.now())
+    UpdatedAt = Column(DateTime(timezone=True), server_default=func.now())
+    CentraID = Column(String(36), ForeignKey('users.UserID'))  # Moved CentraID here
+
+    # Relationships
+    transaction = relationship("Transaction", back_populates="sub_transactions")
+    market_shipments = relationship("MarketShipment", back_populates="sub_transaction", cascade="all, delete-orphan")
+    centra = relationship("User", foreign_keys=[CentraID], backref="sub_transactions") 
+
+
+# --- MarketShipment Model ---
 class MarketShipment(Base):
-    __tablename__ = "market_shipment"
+    __tablename__ = "market_shipments"
 
     MarketShipmentID = Column(Integer, primary_key=True, autoincrement=True)
-    CentraID = Column(String(36), ForeignKey('users.UserID'))
-    CustomerID = Column(String(36), ForeignKey('users.UserID'))
-    DryLeavesID = Column(Integer, ForeignKey('dry_leaves.DryLeavesID'), nullable=True)
-    PowderID = Column(Integer, ForeignKey('flour.FlourID'), nullable=True)
-    status = Column(String)
+    SubTransactionID = Column(Integer, ForeignKey("sub_transactions.SubTransactionID"))  # Fix table name
+    ProductTypeID = Column(Integer, ForeignKey('products_templates.ProductID'))  # Foreign key reference to products_templates
+    ProductID = Column(Integer)
+    Price = Column(Float)
+    InitialPrice = Column(Float)
+    ShipmentStatus = Column(String, default="awaiting")
+    CreatedAt = Column(DateTime(timezone=True), server_default=func.now())
+    UpdatedAt = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        CheckConstraint(
-            '(DryLeavesID IS NULL AND PowderID IS NOT NULL) OR (DryLeavesID IS NOT NULL AND PowderID IS NULL)',
-            name='only_one_product_constraint'
-        ),
+        CheckConstraint('"InitialPrice" >= "Price"', name='check_price_validity'),
     )
-    
-class SubTransaction(Base):
-    __tablename__ = "sub_transaction"
-    
-    SubTransactionID = Column(Integer, primary_key=True, autoincrement=True)
-    MarketShipmentID = Column(Integer, ForeignKey("market_shipment.MarketShipmentID"))
-    status = Column(String)
 
-    # Relationship to Transaction model
-    transactions = relationship("Transaction", back_populates="sub_transaction")
+    # Relationships
+    sub_transaction = relationship("SubTransaction", back_populates="market_shipments")
+    product_type = relationship("Products", foreign_keys=[ProductTypeID], backref="market_shipments")  # Added relationship to ProductTemplate
 
-class Transaction(Base):
-    __tablename__ = "transaction"
-    
-    TransactionID = Column(Integer, primary_key=True, autoincrement=True)
-    SubTransactionID = Column(Integer, ForeignKey("sub_transaction.SubTransactionID"))
-    status = Column(String)
-    
-    # Relationship to SubTransaction model
-    sub_transaction = relationship("SubTransaction", back_populates="transactions")
 
 class CentraFinance(Base):
     __tablename__ = "centra_finance"
