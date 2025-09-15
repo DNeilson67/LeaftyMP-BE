@@ -4,7 +4,6 @@ from requests import Session
 from fastapi.responses import JSONResponse
 import crud
 from database import get_db
-import schemas
 from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
 
 router = APIRouter()
@@ -32,3 +31,27 @@ def get_marketplace_item(
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     return item
+
+@router.get("/marketplace/search_products")
+def search_marketplace_products(
+    query: str = Query(..., min_length=1),
+    skip: int = 0,
+    limit: int = 10,
+    db: Session = Depends(get_db)
+):
+    results = crud.search_products_by_query(db=db, query=query, skip=skip, limit=limit)
+
+    if not results:
+        raise HTTPException(status_code=404, detail="No matching products or users found")
+
+    return [
+        {
+            "id": r.id,
+            "product_name": r.product_name,
+            "weight": r.weight,
+            "username": r.username,
+            "centra_id": r.centra_id,
+            "expiration": r.expiration.isoformat() if r.expiration else None,
+        }
+        for r in results
+    ]

@@ -4,15 +4,15 @@ from requests import Session
 from fastapi.responses import JSONResponse
 import crud
 from database import get_db
-import schemas
+from schemas.user_schemas import Role, RoleBase, RoleCreate
 
 router = APIRouter()
 
-@router.post("/role/post", response_model=schemas.Role, tags=["Roles"])
-def create_role(role: schemas.RoleCreate, db: Session = Depends(get_db)):
+@router.post("/role/post", response_model=Role, tags=["Roles"])
+def create_role(role: RoleCreate, db: Session = Depends(get_db)):
     return crud.create_role(db=db, role=role)
 
-@router.get("/roles/get", response_model=List[schemas.RoleBase], tags=["Roles"])
+@router.get("/roles/get", response_model=List[RoleBase], tags=["Roles"])
 def get_roles(db: Session = Depends(get_db)):
     return crud.get_roles(db=db)
 

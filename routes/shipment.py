@@ -4,27 +4,27 @@ from requests import Session
 from fastapi.responses import JSONResponse
 import crud
 from database import get_db
-import schemas
+from schemas.shipment_schemas import Shipment, ShipmentCreate, ShipmentUpdate, ShipmentDateUpdate, ShipmentCheckInUpdate, ShipmentRescalledWeightUpdate, ShipmentHarborReceptionUpdate, ShipmentCentraReceptionUpdate, ShipmentFlourAssociation
 import bcrypt
 
 router = APIRouter()
 
-@router.post('/shipment/post', response_model=schemas.Shipment, tags=["Shipment"])
-def create_shipment(shipment: schemas.ShipmentCreate, db: Session = Depends(get_db)):
+@router.post('/shipment/post', response_model=Shipment, tags=["Shipment"])
+def create_shipment(shipment: ShipmentCreate, db: Session = Depends(get_db)):
     return crud.create_shipment(db=db, shipment=shipment)
 
-@router.get('/shipment/get', response_model=List[schemas.Shipment], tags=["Shipment"])
+@router.get('/shipment/get', response_model=List[Shipment], tags=["Shipment"])
 def get_shipment(limit: int = 100, db: Session = Depends(get_db)):
     return crud.get_shipment(db=db, limit=limit)
 
-@router.get('/shipment/getid/{shipment_id}', response_model=schemas.Shipment, tags=["Shipment"])
+@router.get('/shipment/getid/{shipment_id}', response_model=Shipment, tags=["Shipment"])
 def get_shipment_by_id(shipment_id: int, db: Session = Depends(get_db)):
     shipment = crud.get_shipment_by_id(db=db, shipment_id=shipment_id)
     if not shipment:
         raise HTTPException(status_code=404, detail="shipment not found")
     return shipment
 
-@router.get("/shipment/get_by_user/{user_id}", response_model=List[schemas.Shipment], tags=["Shipment"])
+@router.get("/shipment/get_by_user/{user_id}", response_model=List[Shipment], tags=["Shipment"])
 def get_shipment_by_user(user_id: str, db: Session = Depends(get_db)):
     shipment_data = crud.get_shipment_by_user_id(db, user_id)
     if not shipment_data:
@@ -60,43 +60,43 @@ def check_shipment_ids(db: Session = Depends(get_db)):
     print(f"Valid shipment IDs: {valid_shipment_ids}")
     return valid_shipment_ids
 
-@router.put("/shipment/put/{shipment_id}", response_model=schemas.Shipment, tags=["Shipment"])
-def update_shipment(shipment_id: int, shipment_update: schemas.ShipmentUpdate, db: Session = Depends(get_db)):
+@router.put("/shipment/put/{shipment_id}", response_model=Shipment, tags=["Shipment"])
+def update_shipment(shipment_id: int, shipment_update: ShipmentUpdate, db: Session = Depends(get_db)):
     db_shipment = crud.update_shipment(db, shipment_id, shipment_update)
     if db_shipment is None:
         raise HTTPException(status_code=404, detail="Shipment not found")
     return db_shipment
 
-@router.put("/shipment/update_date/{shipment_id}", response_model=schemas.Shipment, tags=["Shipment"])
-def update_shipment_date(shipment_id: int, shipment_date_update: schemas.ShipmentDateUpdate, db: Session = Depends(get_db)):
+@router.put("/shipment/update_date/{shipment_id}", response_model=Shipment, tags=["Shipment"])
+def update_shipment_date(shipment_id: int, shipment_date_update: ShipmentDateUpdate, db: Session = Depends(get_db)):
     updated_shipment = crud.update_shipment_date(db=db, shipment_id=shipment_id, shipment_date_update=shipment_date_update)
     if not updated_shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
     return updated_shipment
 
-@router.put("/shipment/update_check_in/{shipment_id}", response_model=schemas.Shipment, tags=["Shipment"])
-def update_shipment_check_in(shipment_id: int, check_in_update: schemas.ShipmentCheckInUpdate, db: Session = Depends(get_db)):
+@router.put("/shipment/update_check_in/{shipment_id}", response_model=Shipment, tags=["Shipment"])
+def update_shipment_check_in(shipment_id: int, check_in_update: ShipmentCheckInUpdate, db: Session = Depends(get_db)):
     updated_shipment = crud.update_shipment_check_in(db=db, shipment_id=shipment_id, check_in_update=check_in_update)
     if not updated_shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
     return updated_shipment
 
-@router.put("/shipment/update_rescalled_weight/{shipment_id}", response_model=schemas.Shipment, tags=["Shipment"])
-def update_shipment_rescalled_weight(shipment_id: int, update_data: schemas.ShipmentRescalledWeightUpdate, db: Session = Depends(get_db)):
+@router.put("/shipment/update_rescalled_weight/{shipment_id}", response_model=Shipment, tags=["Shipment"])
+def update_shipment_rescalled_weight(shipment_id: int, update_data: ShipmentRescalledWeightUpdate, db: Session = Depends(get_db)):
     updated_shipment = crud.update_shipment_rescalled_weight_and_date(db=db, shipment_id=shipment_id, update_data=update_data)
     if not updated_shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
     return updated_shipment
 
-@router.put("/shipment/update_harbor_reception/{shipment_id}", response_model=schemas.Shipment, tags=["Shipment"])
-def update_shipment_harbor_reception(shipment_id: int, update_data: schemas.ShipmentHarborReceptionUpdate, db: Session = Depends(get_db)):
+@router.put("/shipment/update_harbor_reception/{shipment_id}", response_model=Shipment, tags=["Shipment"])
+def update_shipment_harbor_reception(shipment_id: int, update_data: ShipmentHarborReceptionUpdate, db: Session = Depends(get_db)):
     updated_shipment = crud.update_shipment_harbor_reception(db=db, shipment_id=shipment_id, update_data=update_data)
     if not updated_shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
     return updated_shipment
 
-@router.put("/shipment/update_centra_reception/{shipment_id}", response_model=schemas.Shipment, tags=["Shipment"])
-def update_shipment_centra_reception(shipment_id: int, update_data: schemas.ShipmentCentraReceptionUpdate, db: Session = Depends(get_db)):
+@router.put("/shipment/update_centra_reception/{shipment_id}", response_model=Shipment, tags=["Shipment"])
+def update_shipment_centra_reception(shipment_id: int, update_data: ShipmentCentraReceptionUpdate, db: Session = Depends(get_db)):
     updated_shipment = crud.update_shipment_centra_reception(db=db, shipment_id=shipment_id, update_data=update_data)
     if not updated_shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
@@ -110,6 +110,6 @@ def delete_shipment_by_id(shipment_id: int, db: Session = Depends(get_db)):
     else:
         return {"message": "shipment not found or deletion failed"}
     
-@router.get("/shipment_flour_association/get", response_model=List[schemas.ShipmentFlourAssociation], tags=["ShipmentFlourAssociation"])
+@router.get("/shipment_flour_association/get", response_model=List[ShipmentFlourAssociation], tags=["ShipmentFlourAssociation"])
 def get_shipment_flour_associations(db: Session = Depends(get_db)):
     return crud.get_shipment_flour_associations(db)

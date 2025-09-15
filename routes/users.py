@@ -4,11 +4,11 @@ from requests import Session
 from fastapi.responses import JSONResponse
 import crud
 from database import get_db
-import schemas
+from schemas.user_schemas import User, UserUpdate, UserPhoneUpdate, AdminUserUpdate, UserRoleUpdate
 
 router = APIRouter()
 
-@router.get("/user/get", response_model=List[schemas.User], tags=["Users"])
+@router.get("/user/get", response_model=List[User], tags=["Users"])
 def get_users(db: Session = Depends(get_db)):
     # print(f"Fetching users with skip={skip}, limit={limit}")
     users = crud.get_users(db)
@@ -21,7 +21,7 @@ def get_user_count(db: Session = Depends(get_db)):
     print(f"Total user count: {count}")
     return count
 
-@router.get("/user/get_role/{role_id}", response_model=List[schemas.User], tags=["Users"])
+@router.get("/user/get_role/{role_id}", response_model=List[User], tags=["Users"])
 def get_user(role_id: int, db: Session = Depends(get_db)):
     role = crud.get_user_by_role(db, role_id)
     if not role:
@@ -30,7 +30,7 @@ def get_user(role_id: int, db: Session = Depends(get_db)):
         users = crud.get_user_by_role(db, role_id)
         return users
 
-@router.get("/user/get_user/{user_id}", response_model=schemas.User, tags=["Users"])
+@router.get("/user/get_user/{user_id}", response_model=User, tags=["Users"])
 def get_user(user_id: str, db: Session = Depends(get_db)):
     user = crud.get_user_by_id(db, user_id)
     return user
@@ -51,22 +51,22 @@ def get_users_with_shipments(db: Session = Depends(get_db)):
     users = crud.get_users_with_shipments(db)
     return users
 
-@router.put('/user/put/{user_id}', response_model=schemas.UserUpdate, tags=["Users"])
-def update_user(user_id: str, user: schemas.UserUpdate, db: Session = Depends(get_db)):
+@router.put('/user/put/{user_id}', response_model=UserUpdate, tags=["Users"])
+def update_user(user_id: str, user: UserUpdate, db: Session = Depends(get_db)):
     updated_user = crud.update_user(db=db, user_id=user_id, user_update=user)
     if not updated_user:
         raise HTTPException(status_code=404, detail="User does not exist")
     return updated_user
 
-@router.put('/user/update_phone/{user_id}', response_model=schemas.User, tags=["Users"])
-def update_user_phone_endpoint(user_id: str, phone_update: schemas.UserPhoneUpdate, db: Session = Depends(get_db)):
+@router.put('/user/update_phone/{user_id}', response_model=User, tags=["Users"])
+def update_user_phone_endpoint(user_id: str, phone_update: UserPhoneUpdate, db: Session = Depends(get_db)):
     updated_user = crud.update_user_phone(db=db, user_id=user_id, PhoneNumber=phone_update.PhoneNumber)
     if not updated_user:
         raise HTTPException(status_code=404, detail="User not found")
     return updated_user
 
-@router.put('/user/admin_put/{user_id}', response_model=schemas.User, tags=["Users"])
-def update_user(user_id: str, user: schemas.AdminUserUpdate, db: Session = Depends(get_db)):
+@router.put('/user/admin_put/{user_id}', response_model=User, tags=["Users"])
+def update_user(user_id: str, user: AdminUserUpdate, db: Session = Depends(get_db)):
     try:
         updated_user = crud.admin_update_user(db=db, user_id=user_id, user_update=user)
         if not updated_user:
@@ -75,8 +75,8 @@ def update_user(user_id: str, user: schemas.AdminUserUpdate, db: Session = Depen
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.put('/user/update_role/{user_id}', response_model=schemas.User, tags=["Users"])
-def update_user_role(user_id: str, role_update: schemas.UserRoleUpdate, db: Session = Depends(get_db)):
+@router.put('/user/update_role/{user_id}', response_model=User, tags=["Users"])
+def update_user_role(user_id: str, role_update: UserRoleUpdate, db: Session = Depends(get_db)):
     role_name_to_id = {
         "Centra": 1,
         "Harbor": 2,
@@ -103,3 +103,6 @@ def delete_user(user_id: str, db: Session = Depends(get_db)):
         return {"message": "User deleted successfully"}
     else:
         return {"message": "User not found or deletion failed"}
+    
+
+

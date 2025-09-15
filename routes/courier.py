@@ -4,19 +4,19 @@ from requests import Session
 from fastapi.responses import JSONResponse
 import crud
 from database import get_db
-import schemas
+from schemas.shipment_schemas import Courier, CourierCreate
 
 router = APIRouter()
 
-@router.post("/courier/post", response_model=schemas.Courier, tags=["Courier"])
-def create_courier(courier: schemas.CourierCreate, db: Session = Depends(get_db)):
+@router.post("/courier/post", response_model=Courier, tags=["Courier"])
+def create_courier(courier: CourierCreate, db: Session = Depends(get_db)):
     return crud.create_courier(db, courier)
 
-@router.get("/courier/get", response_model=List[schemas.Courier], tags=["Courier"])
+@router.get("/courier/get", response_model=List[Courier], tags=["Courier"])
 def get_courier(db: Session = Depends(get_db)):
     return crud.get_couriers(db)
 
-@router.get("/courier/get/{courier_id}", response_model=schemas.Courier, tags=["Courier"])
+@router.get("/courier/get/{courier_id}", response_model=Courier, tags=["Courier"])
 def get_courier_by_courier_id(courier_id:int, db: Session = Depends(get_db)):
     return crud.get_courier_by_id(db, courier_id)   
 

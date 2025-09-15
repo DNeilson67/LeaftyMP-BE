@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 import httpx
-from schemas import ShipmentData  
+from schemas.biteship_schemas import ShipmentData
 from dotenv import load_dotenv
 import os
 

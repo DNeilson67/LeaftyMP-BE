@@ -105,6 +105,10 @@ def get_user_by_id(db: Session, user_id: str):
 def get_user_by_email(db: Session, email: str):
     return db.query(models.User).filter(models.User.Email == email).first()
 
+def get_user_by_username(db: Session, username: str):
+    return db.query(models.User).filter(models.User.Username == username).first()
+
+
 # def get_user_exist_by_email(db: Session, email: str) -> bool:
 #     return db.query(models.User).filter(models.User.Email == email).first() is not None
 
@@ -1925,3 +1929,34 @@ def create_new_transaction(db: Session, market_shipment: schemas.MarketShipmentC
         "sub_transaction": db_sub_transaction,
         "market_shipment": db_market_shipment
     }
+
+def get_trx_id(db: Session, trx: schemas.blockchain_schemas):
+    # Save the mapping between user_id and blockchain trx id
+    db_trx = models.BlockchainTrx(
+        UserID=trx.userId,
+        TrxId=trx.trx_id
+    )
+    db.add(db_trx)
+    db.commit()
+    db.refresh(db_trx)
+    return db_trx
+
+# blockchain transactions
+def create_blockchain_trx(db: Session, user_id: str, trx_id: str):
+    db_trx = models.BlockchainTrx(
+        UserID=user_id,
+        TrxId=trx_id
+    )
+    db.add(db_trx)
+    db.commit()
+    db.refresh(db_trx)
+    return db_trx
+
+def get_blockchain_trx_by_user_id(db: Session, user_id: str):
+    return db.query(models.BlockchainTrx).filter(models.BlockchainTrx.UserID == user_id).all()
+
+def get_blockchain_trx_by_trx_id(db: Session, trx_id: str):
+    return db.query(models.BlockchainTrx).filter(models.BlockchainTrx.TrxId == trx_id).first()
+
+def get_all_blockchain_trx(db: Session):
+    return db.query(models.BlockchainTrx).all()

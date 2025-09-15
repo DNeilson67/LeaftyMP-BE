@@ -42,8 +42,11 @@ class User(Base):
     PhoneNumber = Column(BigInteger)
     Password = Column(String(100))
     RoleID = Column(Integer, ForeignKey('roles.RoleID'))
+
     role = relationship("RoleModel")
     finances = relationship("CentraFinance", back_populates="user")  # Add this line
+    trx = relationship("BlockchainTrx", back_populates="user")
+
     
     
 class Location(Base):
@@ -225,3 +228,14 @@ class CentraFinance(Base):
 #     lng = Column(Float, nullable=True)
 
 #     user = relationship("User", back_populates="cities")
+
+
+class BlockchainTrx(Base):
+    __tablename__ = "trx_history"
+    
+    UserID = Column(String(36), ForeignKey("users.UserID"), nullable=False)
+    TrxId = Column(String(100), primary_key=True)  
+    CreatedAt = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="trx")
+    

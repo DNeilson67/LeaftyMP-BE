@@ -2,15 +2,13 @@ from fastapi import APIRouter, HTTPException, Depends,  Response
 from sqlalchemy.orm import Session
 from BasicVerifier import BasicVerifier
 from fastapi_sessions.backends.implementations import InMemoryBackend
-from schemas import SessionData
+from schemas.user_schemas import SessionData
 from uuid import UUID, uuid4
-from fastapi.middleware.cors import CORSMiddleware
 import crud
-import schemas
+from schemas.misc_schemas import LoginRequest
 import bcrypt
 from database import get_db
 from fastapi_sessions.frontends.implementations import SessionCookie, CookieParameters
-from fastapi_sessions.session_verifier import SessionVerifier
 import bcrypt
 import pyotp
 from datetime import datetime, timedelta    
@@ -30,10 +28,11 @@ verifier = BasicVerifier(
 )
 
 cookie_params = CookieParameters(
-    secure=True,  # Ensures cookie is sent over HTTPS
+    secure=True,  
     httponly=True,
-    samesite="none"  # Allows the cookie to be sent with cross-origin requests
+    samesite="none" 
 )
+
 
 cookie = SessionCookie(
     cookie_name="session",
@@ -50,7 +49,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 @router.post("/login", tags=["Auth"])
-async def login(request: schemas.LoginRequest, response: Response, db: Session = Depends(get_db)):
+async def login(request: LoginRequest, response: Response, db: Session = Depends(get_db)):
     user = crud.get_user_details_by_email(db, request.Email)
     
     if not user:
@@ -71,8 +70,9 @@ async def login(request: schemas.LoginRequest, response: Response, db: Session =
 
     return {"code": "200", "status": "Login Successful"}
 
-@router.post('/register', response_model=schemas.User, tags=["Auth"])
-def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
+from schemas.user_schemas import User, UserCreate
+@router.post('/register', response_model=User, tags=["Auth"])
+def register(user: UserCreate, db: Session = Depends(get_db)):
     # Check if role exists, if not, return error
     role = crud.get_role(db, role_id=user.RoleID)
     if not role:
@@ -103,7 +103,13 @@ async def create_session(user_id: str, response: Response, db: Session = Depends
 async def whoami(session_data: SessionData = Depends(verifier)):
     return session_data
     
-    
+@router.get('/get_location_user', dependencies=[Depends(cookie)])
+async def get_location_user(db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
+    user_id = session_data.UserID
+    location = crud.get_location_by_user_id(db, user_id)
+    if not location:
+        raise HTTPException(status_code=404, detail="Location not found")
+    return location
 
 @router.delete("/delete_session", dependencies=[Depends(cookie)])
 async def del_session(response: Response, session_id: UUID = Depends(cookie), db: Session = Depends(get_db)):
@@ -123,8 +129,9 @@ async def del_session(response: Response, session_id: UUID = Depends(cookie), db
 
 
 # OTP
+from schemas.otp_schemas import GenerateOTPRequest, OTPCreate, VerifyOTPRequest
 @router.post("/generate_otp")
-def generate_otp(request: schemas.GenerateOTPRequest, db: Session = Depends(get_db)):
+def generate_otp(request: GenerateOTPRequest, db: Session = Depends(get_db)):
     email = request.email
     
     secret = pyotp.random_base32()
@@ -137,7 +144,7 @@ def generate_otp(request: schemas.GenerateOTPRequest, db: Session = Depends(get_
 
     hashed_otp_code = bcrypt.hashpw(otp_code.encode('utf-8'), bcrypt.gensalt())
 
-    otp_create = schemas.OTPCreate(email=email, otp_code=hashed_otp_code, expires_at=datetime.now() + timedelta(minutes=2))
+    otp_create = OTPCreate(email=email, otp_code=hashed_otp_code, expires_at=datetime.now() + timedelta(minutes=2))
     crud.create_otp(db, otp_create)
 
     server = smtplib.SMTP('smtp.gmail.com', 587)
@@ -163,7 +170,7 @@ def generate_otp(request: schemas.GenerateOTPRequest, db: Session = Depends(get_
 
 # Endpoint to verify OTP
 @router.post("/verify_otp")
-def verify_otp(request: schemas.VerifyOTPRequest, db: Session = Depends(get_db)):
+def verify_otp(request: VerifyOTPRequest, db: Session = Depends(get_db)):
     email = request.email
     otp_code = request.otp_code
 

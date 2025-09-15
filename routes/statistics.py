@@ -4,7 +4,6 @@ from requests import Session
 from fastapi.responses import JSONResponse
 import crud
 from database import get_db
-import schemas
 
 router = APIRouter()
 

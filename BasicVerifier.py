@@ -1,7 +1,7 @@
 from fastapi_sessions.session_verifier import SessionVerifier
 from fastapi import HTTPException
 from uuid import UUID
-from schemas import SessionData
+from schemas.user_schemas import SessionData
 from fastapi_sessions.backends.implementations import InMemoryBackend
 
 

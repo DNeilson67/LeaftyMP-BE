@@ -4,7 +4,6 @@ from requests import Session
 
 import crud
 from database import get_db
-import schemas
 
 router = APIRouter()
 

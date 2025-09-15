@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 import crud
 from database import get_db
-import schemas
+from schemas.xendit_schemas import InvoiceRequest, XenditInvoiceRequestBody, InvoicePaidWebhook
 import models 
 from models import Flour,WetLeaves,DryLeaves
 from dotenv import load_dotenv
@@ -31,7 +31,7 @@ xendit_invoice_url = "https://api.xendit.co/v2/invoices"
 
 
 @router.post("/create_invoice", tags=["Xendit"])
-async def create_invoice(invoice_request: schemas.InvoiceRequest):
+async def create_invoice(invoice_request: InvoiceRequest):
     headers = {
         "Authorization": f"Basic {encoded_api_key}"
     }
@@ -139,7 +139,7 @@ async def generate_invoice(
 
 
 @router.post("/invoice/from_webhook")
-async def generate_invoice_from_webhook(payload: schemas.XenditInvoiceRequestBody):
+async def generate_invoice_from_webhook(payload: XenditInvoiceRequestBody):
     try:
         from_info = payload.merchant_name or "Merchant"
         to_info = payload.payer_email or "Customer"
@@ -219,7 +219,7 @@ def test():
 
 #WEBHOOK: Change status to "On Delivery" if paid
 @router.post("/webhook/invoice-paid", tags=["Xendit Webhooks"])
-async def invoice_paid_webhook(payload: dict = Body(...), db: Session = Depends(get_db)):
+async def invoice_paid_webhook(payload: InvoicePaidWebhook, db: Session = Depends(get_db)):
     try:
         if payload.status != "PAID":
             return {"message": f"Ignored. Status is {payload.status}"}

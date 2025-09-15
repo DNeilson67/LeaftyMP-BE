@@ -473,6 +473,31 @@ class XenditInvoiceRequestBody(BaseModel):
     currency: str
     payment_channel: str
     payment_destination: str
+    
+class InvoicePaidWebhook(BaseModel):
+    id: str
+    external_id: str
+    user_id: str
+    is_high: bool
+    payment_method: str
+    status: str
+    merchant_name: str
+    amount: float
+    paid_amount: float
+    bank_code: str
+    paid_at: datetime
+    payer_email: EmailStr
+    description: Optional[str] = "No description"
+    adjusted_received_amount: Optional[float] = 0.0
+    fees_paid_amount: Optional[float] = 0.0
+    updated: datetime
+    created: datetime
+    currency: str
+    payment_channel: str
+    payment_destination: str
+    payment_id: str
+    failure_redirect_url: Optional[str] = None
+    success_redirect_url: Optional[str] = None
 
 class CityBase(BaseModel):
     user_id: str
@@ -543,3 +568,20 @@ class ShipmentData(BaseModel):
     order_note: str
     metadata: Dict = Field(default_factory=dict)
     items: List[Item]
+
+
+class trx_form(BaseModel):
+    userId: UUID4
+    trx_id: str
+
+class BlockchainTrxBase(BaseModel):
+    UserID: str
+    TrxId: str
+    CreatedAt: Optional[datetime] = None
+
+class BlockchainTrxResponse(BlockchainTrxBase):
+    username: Optional[str] = None
+    user_email: Optional[str] = None
+
+    class Config:
+        orm_mode = True
