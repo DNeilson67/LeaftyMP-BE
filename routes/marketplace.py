@@ -4,7 +4,7 @@ from requests import Session
 from fastapi.responses import JSONResponse
 import crud
 from database import get_db
-from schemas.transaction_schemas import MarketShipmentCreate
+from schemas.transaction_schemas import MarketShipmentCreate, BulkTransactionCreate, BulkTransactionResponse
 from schemas.transaction_schemas import TransactionDisplayBase
 from schemas.user_schemas import SessionData
 from routes.auth import verifier
@@ -14,6 +14,11 @@ router = APIRouter()
 @router.post("/marketplace/create_transaction")                
 def create_new_transaction(market_shipment: MarketShipmentCreate, db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
     return crud.create_single_transaction_by_customer(db=db, market_shipment=market_shipment, session_data=session_data)                     
+
+@router.post("/marketplace/create_bulk_transaction", response_model=BulkTransactionResponse)
+def create_bulk_transaction(bulk_transaction: BulkTransactionCreate, db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
+    """Create a bulk transaction with multiple items from potentially different centras"""
+    return crud.create_bulk_transaction_by_customer(db=db, bulk_transaction=bulk_transaction, session_data=session_data)
 
 @router.get("/marketplace/get_transactions_by_customer", response_model=List[TransactionDisplayBase])
 def get_marketplace_transaction_details(

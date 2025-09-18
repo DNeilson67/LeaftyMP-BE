@@ -1089,41 +1089,304 @@ def create_single_transaction_by_customer(db: Session, market_shipment: schemas.
     if not customer_user or customer_user.RoleID != 5:
         raise HTTPException(status_code=400, detail="CustomerID must reference a user with the 'Customer' role.")
 
-    # Step 1: Create Transaction
+    # Database transaction with row-level locking
+    try:
+        # Lock the specific product row to prevent concurrent modifications
+        product_table = None
+        product_query = None
+        
+        if market_shipment.ProductTypeID == 1:  # Wet Leaves
+            product_table = models.WetLeaves
+            product_query = db.query(models.WetLeaves).filter(
+                models.WetLeaves.WetLeavesID == market_shipment.ProductID
+            ).with_for_update(nowait=False)
+        elif market_shipment.ProductTypeID == 2:  # Dry Leaves
+            product_table = models.DryLeaves
+            product_query = db.query(models.DryLeaves).filter(
+                models.DryLeaves.DryLeavesID == market_shipment.ProductID
+            ).with_for_update(nowait=False)
+        elif market_shipment.ProductTypeID == 3:  # Flour
+            product_table = models.Flour
+            product_query = db.query(models.Flour).filter(
+                models.Flour.FlourID == market_shipment.ProductID
+            ).with_for_update(nowait=False)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid ProductTypeID")
+
+        # Lock and validate the product exists and is available
+        locked_product = product_query.first()
+        if not locked_product:
+            raise HTTPException(status_code=404, detail="Product not found")
+        
+        # Check if product is available (not already processed or sold)
+        if hasattr(locked_product, 'Status') and locked_product.Status in ['Processed', 'Sold', 'Expired']:
+            raise HTTPException(status_code=400, detail=f"Product is not available. Current status: {locked_product.Status}")
+
+        # Check product ownership belongs to the centra
+        if locked_product.UserID != centra_id_str:
+            raise HTTPException(status_code=403, detail="Product does not belong to the specified centra")
+
+        # Step 1: Create Transaction with default status
+        transaction_id = str(uuid.uuid4())
+        db_transaction = models.Transaction(
+            TransactionID=transaction_id,
+            CustomerID = customer_id_str,
+            TransactionStatus="Transaction Pending"  # Default status
+        )
+        db.add(db_transaction)
+        db.flush()  # Use flush instead of commit to keep transaction open
+
+        # Step 2: Create SubTransaction linked to the Transaction
+        db_sub_transaction = models.SubTransaction(
+            TransactionID=transaction_id,
+            CentraID=market_shipment.CentraID  # Moved CentraID to SubTransaction
+        )
+        db.add(db_sub_transaction)
+        db.flush()
+
+        # Step 3: Create MarketShipment linked to the SubTransaction
+        db_market_shipment = models.MarketShipment(
+            SubTransactionID=db_sub_transaction.SubTransactionID,
+            ProductTypeID=market_shipment.ProductTypeID,
+            ProductID=market_shipment.ProductID,
+            Price=market_shipment.Price,
+            InitialPrice=market_shipment.InitialPrice,
+        )
+        db.add(db_market_shipment)
+        db.flush()
+
+        # Update product status to "Reserved" to indicate it's part of a transaction
+        locked_product.Status = "Reserved"
+        db.flush()
+
+        # Commit the entire transaction
+        db.commit()
+        
+        return {
+            "TransactionID": transaction_id,
+            "message": "Transaction created successfully with product locked"
+        }
+
+    except Exception as e:
+        # Rollback on any error
+        db.rollback()
+        if "could not obtain lock" in str(e).lower():
+            raise HTTPException(status_code=423, detail="Product is currently being processed by another transaction. Please try again.")
+        raise e
+
+
+def create_bulk_transaction_by_customer(db: Session, bulk_transaction: schemas.BulkTransactionCreate, session_data: schemas.SessionData):
+    """Create a bulk transaction with multiple items, with row-level locking and proper error handling"""
+    customer_id_str = str(session_data.UserID)
+    
+    # Validate Customer user
+    customer_user = db.query(models.User).filter(models.User.UserID == customer_id_str).first()
+    if not customer_user or customer_user.RoleID != 5:
+        raise HTTPException(status_code=400, detail="CustomerID must reference a user with the 'Customer' role.")
+
+    if not bulk_transaction.items:
+        raise HTTPException(status_code=400, detail="Bulk transaction must contain at least one item")
+
+    failed_items = []
+    successful_items = []
+    
+    # Create the main transaction first with default status
     transaction_id = str(uuid.uuid4())
     db_transaction = models.Transaction(
         TransactionID=transaction_id,
-        CustomerID = customer_id_str
+        CustomerID=customer_id_str,
+        TransactionStatus="Transaction Pending"  # Default status
     )
-    db.add(db_transaction)
-    db.commit()
-    db.refresh(db_transaction)
+    
+    try:
+        db.add(db_transaction)
+        db.flush()  # Create transaction but keep it open
+        
+        # Group items by centra to create sub-transactions
+        centra_groups = {}
+        for item in bulk_transaction.items:
+            centra_id = str(item.CentraID)
+            if centra_id not in centra_groups:
+                centra_groups[centra_id] = []
+            centra_groups[centra_id].append(item)
+        
+        # Process each centra group
+        for centra_id, items in centra_groups.items():
+            # Validate Centra user
+            centra_user = db.query(models.User).filter(models.User.UserID == centra_id).first()
+            if not centra_user or centra_user.RoleID != 1:
+                failed_items.extend([{
+                    "item": item.dict(),
+                    "error": f"CentraID {centra_id} must reference a user with the 'Centra' role."
+                } for item in items])
+                continue
+            
+            # Create sub-transaction for this centra
+            db_sub_transaction = models.SubTransaction(
+                TransactionID=transaction_id,
+                CentraID=centra_id,
+                SubTransactionStatus="pending"
+            )
+            db.add(db_sub_transaction)
+            db.flush()
+            
+            # Process each item for this centra
+            for item in items:
+                try:
+                    # Lock the specific product row to prevent concurrent modifications
+                    product_table = None
+                    product_query = None
+                    
+                    if item.ProductTypeID == 1:  # Wet Leaves
+                        product_table = models.WetLeaves
+                        product_query = db.query(models.WetLeaves).filter(
+                            models.WetLeaves.WetLeavesID == item.ProductID
+                        ).with_for_update(nowait=False)
+                    elif item.ProductTypeID == 2:  # Dry Leaves
+                        product_table = models.DryLeaves
+                        product_query = db.query(models.DryLeaves).filter(
+                            models.DryLeaves.DryLeavesID == item.ProductID
+                        ).with_for_update(nowait=False)
+                    elif item.ProductTypeID == 3:  # Flour
+                        product_table = models.Flour
+                        product_query = db.query(models.Flour).filter(
+                            models.Flour.FlourID == item.ProductID
+                        ).with_for_update(nowait=False)
+                    else:
+                        failed_items.append({
+                            "item": item.dict(),
+                            "error": "Invalid ProductTypeID"
+                        })
+                        continue
 
-    # Step 2: Create SubTransaction linked to the Transaction
-    db_sub_transaction = models.SubTransaction(
-        TransactionID=transaction_id,
-        CentraID=market_shipment.CentraID  # Moved CentraID to SubTransaction
-    )
-    db.add(db_sub_transaction)
-    db.commit()
-    db.refresh(db_sub_transaction)
+                    # Lock and validate the product exists and is available
+                    locked_product = product_query.first()
+                    if not locked_product:
+                        failed_items.append({
+                            "item": item.dict(),
+                            "error": "Product not found"
+                        })
+                        continue
+                    
+                    # Check if product is available (not already processed or sold)
+                    if hasattr(locked_product, 'Status') and locked_product.Status in ['Processed', 'Sold', 'Expired']:
+                        failed_items.append({
+                            "item": item.dict(),
+                            "error": f"Product is not available. Current status: {locked_product.Status}"
+                        })
+                        continue
 
-    # Step 3: Create MarketShipment linked to the SubTransaction
-    db_market_shipment = models.MarketShipment(
-        SubTransactionID=db_sub_transaction.SubTransactionID,
-        ProductTypeID=market_shipment.ProductTypeID,
-        ProductID=market_shipment.ProductID,
-        Price=market_shipment.Price,
-        InitialPrice=market_shipment.InitialPrice,
+                    # Check product ownership belongs to the centra
+                    if locked_product.UserID != centra_id:
+                        failed_items.append({
+                            "item": item.dict(),
+                            "error": "Product does not belong to the specified centra"
+                        })
+                        continue
+
+                    # Create MarketShipment for this item
+                    db_market_shipment = models.MarketShipment(
+                        SubTransactionID=db_sub_transaction.SubTransactionID,
+                        ProductTypeID=item.ProductTypeID,
+                        ProductID=item.ProductID,
+                        Price=item.Price,
+                        InitialPrice=item.InitialPrice,
+                        ShipmentStatus="awaiting"
+                    )
+                    db.add(db_market_shipment)
+                    db.flush()
+
+                    # Update product status to "Reserved"
+                    locked_product.Status = "Reserved"
+                    db.flush()
+                    
+                    successful_items.append(item)
+                    
+                except Exception as item_error:
+                    failed_items.append({
+                        "item": item.dict(),
+                        "error": str(item_error)
+                    })
+                    continue
+        
+        # If no items were successful, rollback the entire transaction
+        if not successful_items:
+            db.rollback()
+            raise HTTPException(
+                status_code=400, 
+                detail=f"No items could be processed successfully. Failed items: {len(failed_items)}"
+            )
+        
+        # Commit the transaction
+        db.commit()
+        
+        response = {
+            "TransactionID": transaction_id,
+            "message": f"Bulk transaction created successfully. {len(successful_items)} items processed, {len(failed_items)} failed.",
+            "total_items": len(successful_items)
+        }
+        
+        if failed_items:
+            response["failed_items"] = failed_items
+            
+        return response
+
+    except Exception as e:
+        # Rollback on any error
+        db.rollback()
+        if "could not obtain lock" in str(e).lower():
+            raise HTTPException(status_code=423, detail="Some products are currently being processed by another transaction. Please try again.")
+        raise e
+
+
+# Market Shipment CRUD functions
+def get_market_shipments(db: Session, skip: int = 0, limit: int = 10):
+    return db.query(models.MarketShipment).offset(skip).limit(limit).all()
+
+def get_market_shipment_by_id(db: Session, market_shipment_id: int):
+    return db.query(models.MarketShipment).filter(models.MarketShipment.MarketShipmentID == market_shipment_id).first()
+
+def get_market_shipments_by_centra_id(db: Session, centra_id: str, skip: int = 0, limit: int = 10):
+    return (
+        db.query(models.MarketShipment)
+        .join(models.SubTransaction, models.MarketShipment.SubTransactionID == models.SubTransaction.SubTransactionID)
+        .filter(models.SubTransaction.CentraID == centra_id)
+        .offset(skip)
+        .limit(limit)
+        .all()
     )
-    db.add(db_market_shipment)
+
+def update_market_shipment(db: Session, market_shipment_id: int, market_shipment_update: schemas.MarketShipmentUpdate):
+    db_market_shipment = db.query(models.MarketShipment).filter(models.MarketShipment.MarketShipmentID == market_shipment_id).first()
+    if not db_market_shipment:
+        return None
+    
+    update_data = market_shipment_update.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(db_market_shipment, field, value)
+    
     db.commit()
     db.refresh(db_market_shipment)
+    return db_market_shipment
 
-    return {
-        "TransactionID": transaction_id
-    }
+def delete_market_shipment(db: Session, market_shipment_id: int):
+    db_market_shipment = db.query(models.MarketShipment).filter(models.MarketShipment.MarketShipmentID == market_shipment_id).first()
+    if db_market_shipment:
+        db.delete(db_market_shipment)
+        db.commit()
+        return True
+    return False
 
+def update_market_shipment_status(db: Session, market_shipment_id: int, status: str):
+    """Update the shipment status of a market shipment"""
+    db_market_shipment = db.query(models.MarketShipment).filter(models.MarketShipment.MarketShipmentID == market_shipment_id).first()
+    if not db_market_shipment:
+        return None
+    
+    db_market_shipment.ShipmentStatus = status
+    db.commit()
+    db.refresh(db_market_shipment)
+    return db_market_shipment
 
 # --- Get All Transactions ---
 def get_transactions(db: Session, skip: int = 0, limit: int = 10):
@@ -1132,71 +1395,91 @@ def get_transactions(db: Session, skip: int = 0, limit: int = 10):
 def get_transactions_by_customer(db: Session, skip: int = 0, limit: int = 10, session_data: schemas.SessionData = None):
     CustomerID = str(session_data.UserID)
 
-    # Query to fetch necessary fields, including Centra's Username and ProductName
-    transactions = (
-        db.query(
-            models.Transaction.TransactionID,
-            models.Transaction.TransactionStatus,
-            models.Transaction.CreatedAt,
-            models.Transaction.ExpirationAt,
-            models.Transaction.CustomerID,
-            models.SubTransaction.SubTransactionID,
-            models.SubTransaction.SubTransactionStatus,
-            models.SubTransaction.CentraID,  # Fetch CentraID to get Centra's Username
-            models.MarketShipment.ProductID,
-            models.MarketShipment.InitialPrice,
-            models.MarketShipment.Price,
-            models.MarketShipment.ShipmentStatus,
-            models.Products.ProductName.label("ProductName")  # Fetch ProductName from the Product model
-        )
-        .join(models.SubTransaction, models.Transaction.TransactionID == models.SubTransaction.TransactionID)
-        .join(models.MarketShipment, models.SubTransaction.SubTransactionID == models.MarketShipment.SubTransactionID)
-        .join(models.Products, models.MarketShipment.ProductTypeID == models.Products.ProductID)
-        .join(models.User, models.SubTransaction.CentraID == models.User.UserID)  # Join User table to get Centra's Username
+    # First, get all transactions for this customer
+    main_transactions = (
+        db.query(models.Transaction)
         .filter(models.Transaction.CustomerID == CustomerID)
-        .order_by(models.Transaction.ExpirationAt.desc())  # Order by CreatedAt descending
+        .order_by(models.Transaction.CreatedAt.desc())
         .limit(limit)
         .offset(skip)
         .all()
     )
     
-    if transactions is None:
-        raise HTTPException(status_code=404, detail="No transactions found for this customer")
+    if not main_transactions:
+        return []
 
-    # Format the results into the desired structure
     result = []
-    for transaction in transactions:
-        # Find the associated Centra's Username
-        centra_username = db.query(models.User.Username).filter(models.User.UserID == transaction.CentraID).first()        
+    
+    for main_transaction in main_transactions:
+        # Get all sub-transactions and their related data for this transaction
+        sub_transactions_data = (
+            db.query(
+                models.SubTransaction.SubTransactionID,
+                models.SubTransaction.SubTransactionStatus,
+                models.SubTransaction.CentraID,
+                models.User.Username.label("CentraUsername"),
+                models.MarketShipment.ProductID,
+                models.MarketShipment.InitialPrice,
+                models.MarketShipment.Price,
+                models.MarketShipment.ShipmentStatus,
+                models.Products.ProductName
+            )
+            .join(models.MarketShipment, models.SubTransaction.SubTransactionID == models.MarketShipment.SubTransactionID)
+            .join(models.Products, models.MarketShipment.ProductTypeID == models.Products.ProductID)
+            .join(models.User, models.SubTransaction.CentraID == models.User.UserID)
+            .filter(models.SubTransaction.TransactionID == main_transaction.TransactionID)
+            .all()
+        )
 
-        # Find the weight of the product
-        if transaction.ProductName == "Wet Leaves":
-            product_weight = db.query(models.WetLeaves.Weight).filter(models.WetLeaves.WetLeavesID == transaction.ProductID).first()
-        elif transaction.ProductName == "Dry Leaves":
-            product_weight = db.query(models.DryLeaves.Processed_Weight).filter(models.DryLeaves.DryLeavesID == transaction.ProductID).first()
-        elif transaction.ProductName == "Powder":
-            product_weight = db.query(models.Flour.Flour_Weight).filter(models.Flour.FlourID == transaction.ProductID).first()
-        else:
-            raise HTTPException(status_code=400, detail="Invalid ProductName")
+        # Group the data by sub-transaction
+        sub_transactions_dict = {}
+        
+        for row in sub_transactions_data:
+            sub_tx_id = row.SubTransactionID
+            
+            # Get product weight based on product type
+            product_weight = None
+            if row.ProductName == "Wet Leaves":
+                weight_result = db.query(models.WetLeaves.Weight).filter(models.WetLeaves.WetLeavesID == row.ProductID).first()
+                product_weight = weight_result.Weight if weight_result else None
+            elif row.ProductName == "Dry Leaves":
+                weight_result = db.query(models.DryLeaves.Processed_Weight).filter(models.DryLeaves.DryLeavesID == row.ProductID).first()
+                product_weight = weight_result.Processed_Weight if weight_result else None
+            elif row.ProductName == "Powder":
+                weight_result = db.query(models.Flour.Flour_Weight).filter(models.Flour.FlourID == row.ProductID).first()
+                product_weight = weight_result.Flour_Weight if weight_result else None
+
+            # Create market shipment data
+            market_shipment = {
+                "ProductID": row.ProductID,
+                "InitialPrice": row.InitialPrice,
+                "Price": row.Price,
+                "Weight": product_weight,
+                "ShipmentStatus": row.ShipmentStatus,
+                "ProductName": row.ProductName
+            }
+
+            # If this sub-transaction doesn't exist in our dict, create it
+            if sub_tx_id not in sub_transactions_dict:
+                sub_transactions_dict[sub_tx_id] = {
+                    "SubTransactionID": sub_tx_id,
+                    "CentraUsername": row.CentraUsername,
+                    "SubTransactionStatus": row.SubTransactionStatus,
+                    "market_shipments": []
+                }
+            
+            # Add the market shipment to this sub-transaction
+            sub_transactions_dict[sub_tx_id]["market_shipments"].append(market_shipment)
+
+        # Convert dictionary to list
+        sub_transactions_list = list(sub_transactions_dict.values())
 
         transaction_data = {
-            "TransactionID": transaction.TransactionID,
-            "TransactionStatus": transaction.TransactionStatus,
-            "CreatedAt": transaction.CreatedAt.isoformat(),
-            "ExpirationAt": transaction.ExpirationAt.isoformat() if transaction.ExpirationAt else None,
-            "sub_transactions": [{
-                "SubTransactionID": transaction.SubTransactionID,
-                "CentraUsername": centra_username.Username if centra_username else None,
-                "SubTransactionStatus": transaction.SubTransactionStatus,
-                "market_shipments": [{
-                    "ProductID": transaction.ProductID,
-                    "InitialPrice": transaction.InitialPrice,
-                    "Price": transaction.Price,
-                    "Weight": product_weight[0] if product_weight else None,  # Include weight based on ProductName
-                    "ShipmentStatus": transaction.ShipmentStatus,
-                    "ProductName": transaction.ProductName  # Include ProductName
-                }]
-            }]
+            "TransactionID": main_transaction.TransactionID,
+            "TransactionStatus": main_transaction.TransactionStatus,
+            "CreatedAt": main_transaction.CreatedAt.isoformat(),
+            "ExpirationAt": main_transaction.ExpirationAt.isoformat() if main_transaction.ExpirationAt else None,
+            "sub_transactions": sub_transactions_list
         }
         
         result.append(transaction_data)
@@ -1210,68 +1493,86 @@ def get_transaction_by_id(db: Session, transaction_id: UUID):
 def get_transaction_details_by_id(db: Session, transaction_id: UUID, session_data: schemas.SessionData = None, skip: int = 0, limit: int = 10):
     CustomerID = str(session_data.UserID)
 
-    # Query to fetch necessary fields, including Centra's Username and ProductName
-    transaction = (
+    # First, get the main transaction details
+    main_transaction = (
+        db.query(models.Transaction)
+        .filter(models.Transaction.CustomerID == CustomerID)
+        .filter(models.Transaction.TransactionID == str(transaction_id))
+        .first()
+    )
+    
+    if main_transaction is None:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    # Query to fetch all sub-transactions and their related data
+    sub_transactions_data = (
         db.query(
-            models.Transaction.TransactionID,
-            models.Transaction.TransactionStatus,
-            models.Transaction.CreatedAt,
-            models.Transaction.ExpirationAt,
-            models.Transaction.CustomerID,
             models.SubTransaction.SubTransactionID,
             models.SubTransaction.SubTransactionStatus,
-            models.SubTransaction.CentraID,  # Fetch CentraID to get Centra's Username
+            models.SubTransaction.CentraID,
+            models.User.Username.label("CentraUsername"),
             models.MarketShipment.ProductID,
             models.MarketShipment.InitialPrice,
             models.MarketShipment.Price,
             models.MarketShipment.ShipmentStatus,
-            models.Products.ProductName.label("ProductName")  # Fetch ProductName from the Product model
+            models.Products.ProductName
         )
-        .join(models.SubTransaction, models.Transaction.TransactionID == models.SubTransaction.TransactionID)
         .join(models.MarketShipment, models.SubTransaction.SubTransactionID == models.MarketShipment.SubTransactionID)
         .join(models.Products, models.MarketShipment.ProductTypeID == models.Products.ProductID)
-        .join(models.User, models.SubTransaction.CentraID == models.User.UserID)  # Join User table to get Centra's Username
-        .filter(models.Transaction.CustomerID == CustomerID)
-        .filter(models.Transaction.TransactionID == str(transaction_id))
-        .limit(limit)
-        .offset(skip)
-        .first()
+        .join(models.User, models.SubTransaction.CentraID == models.User.UserID)
+        .filter(models.SubTransaction.TransactionID == str(transaction_id))
+        .all()
     )
+
+    # Group the data by sub-transaction
+    sub_transactions_dict = {}
     
-    if transaction is None:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+    for row in sub_transactions_data:
+        sub_tx_id = row.SubTransactionID
+        
+        # Get product weight based on product type
+        product_weight = None
+        if row.ProductName == "Wet Leaves":
+            weight_result = db.query(models.WetLeaves.Weight).filter(models.WetLeaves.WetLeavesID == row.ProductID).first()
+            product_weight = weight_result.Weight if weight_result else None
+        elif row.ProductName == "Dry Leaves":
+            weight_result = db.query(models.DryLeaves.Processed_Weight).filter(models.DryLeaves.DryLeavesID == row.ProductID).first()
+            product_weight = weight_result.Processed_Weight if weight_result else None
+        elif row.ProductName == "Powder":
+            weight_result = db.query(models.Flour.Flour_Weight).filter(models.Flour.FlourID == row.ProductID).first()
+            product_weight = weight_result.Flour_Weight if weight_result else None
 
-    # Find the associated Centra's Username
-    centra_username = db.query(models.User.Username).filter(models.User.UserID == transaction.CentraID).first()        
+        # Create market shipment data
+        market_shipment = {
+            "ProductID": row.ProductID,
+            "InitialPrice": row.InitialPrice,
+            "Price": row.Price,
+            "Weight": product_weight,
+            "ShipmentStatus": row.ShipmentStatus,
+            "ProductName": row.ProductName
+        }
 
-    # Find the weight of the product
-    if transaction.ProductName == "Wet Leaves":
-        product_weight = db.query(models.WetLeaves.Weight).filter(models.WetLeaves.WetLeavesID == transaction.ProductID).first()
-    elif transaction.ProductName == "Dry Leaves":
-        product_weight = db.query(models.DryLeaves.Processed_Weight).filter(models.DryLeaves.DryLeavesID == transaction.ProductID).first()
-    elif transaction.ProductName == "Powder":
-        product_weight = db.query(models.Flour.Flour_Weight).filter(models.Flour.FlourID == transaction.ProductID).first()
-    else:
-        raise HTTPException(status_code=400, detail="Invalid ProductName")
+        # If this sub-transaction doesn't exist in our dict, create it
+        if sub_tx_id not in sub_transactions_dict:
+            sub_transactions_dict[sub_tx_id] = {
+                "SubTransactionID": sub_tx_id,
+                "CentraUsername": row.CentraUsername,
+                "SubTransactionStatus": row.SubTransactionStatus,
+                "market_shipments": []
+            }
+        
+        # Add the market shipment to this sub-transaction
+        sub_transactions_dict[sub_tx_id]["market_shipments"].append(market_shipment)
+
+    # Convert dictionary to list
+    sub_transactions_list = list(sub_transactions_dict.values())
 
     transaction_data = {
-        "TransactionID": transaction.TransactionID,
-        "TransactionStatus": transaction.TransactionStatus,
-        "CreatedAt": transaction.CreatedAt.isoformat(),
-        "ExpirationAt": transaction.ExpirationAt.isoformat() if transaction.ExpirationAt else None,
-        "sub_transactions": [{
-        "SubTransactionID": transaction.SubTransactionID,
-        "CentraUsername": centra_username.Username if centra_username else None,
-        "SubTransactionStatus": transaction.SubTransactionStatus,
-        "market_shipments": [{
-            "ProductID": transaction.ProductID,
-            "InitialPrice": transaction.InitialPrice,
-            "Price": transaction.Price,
-            "Weight": product_weight[0] if product_weight else None,  # Include weight based on ProductName
-            "ShipmentStatus": transaction.ShipmentStatus,
-            "ProductName": transaction.ProductName  # Include ProductName
-            }]
-        }]
+        "TransactionID": main_transaction.TransactionID,
+        "TransactionStatus": main_transaction.TransactionStatus,
+        "CreatedAt": main_transaction.CreatedAt.isoformat(),
+        "ExpirationAt": main_transaction.ExpirationAt.isoformat() if main_transaction.ExpirationAt else None,
+        "sub_transactions": sub_transactions_list
     }
 
     return transaction_data
@@ -1350,17 +1651,17 @@ def delete_centra_finance(db: Session, finance_id: int):
 
 def get_random_items(db: Session, item_type: str, limit: int = 100):
     chosen_item = ''
-    # Fetch data based on item type
+    # Fetch data based on item type - only items with "Awaiting" status
     if item_type.lower() == 'flour':
-        items = db.query(models.Flour).order_by(func.random()).limit(limit).all()
+        items = db.query(models.Flour).filter(models.Flour.Status == "Awaiting").order_by(func.random()).limit(limit).all()
         chosen_item = "Powder"
     elif item_type.lower() == 'dry_leaves':
-        items = db.query(models.DryLeaves).order_by(func.random()).limit(limit).all()
+        items = db.query(models.DryLeaves).filter(models.DryLeaves.Status == "Awaiting").order_by(func.random()).limit(limit).all()
         chosen_item = "Dry Leaves"
     else:
         raise ValueError("Invalid item type. Choose 'flour' or 'dry_leaves'.")
 
-    # Initialize the dictionary to group items by username
+    # Initialize the dictionary to group items by user ID (centra ID)
     grouped_data = {}
 
     currentDate = datetime.now()
@@ -1405,11 +1706,11 @@ def get_random_items(db: Session, item_type: str, limit: int = 100):
         elif item_type.lower() == 'flour':
             item_data = {"id": item.FlourID, "weight": item.Flour_Weight, "initial_price": price, "price": final_price, "discounted": discounted}
        
-        # Group by username
-        if username not in grouped_data:
-            grouped_data[username] = [item_data]
+        # Group by user_id (centra ID) instead of username
+        if user_id not in grouped_data:
+            grouped_data[user_id] = [item_data]
         else:
-            grouped_data[username].append(item_data)
+            grouped_data[user_id].append(item_data)
 
     return grouped_data
 
@@ -1422,17 +1723,12 @@ def get_items(db: Session, item_type: str, limit: int = 100):
     else:
         raise ValueError("Invalid item type. Choose 'flour' or 'dry_leaves'.")
 
-    # Initialize the dictionary to group items by username
+    # Initialize the dictionary to group items by user ID (centra ID)
     grouped_data = {}
 
     # Iterate through each item to populate grouped_data
     for item in items:
-        user_id = item.UserID  # Assuming each item has a 'UserID' attribute
-        user = get_user_by_id(db, user_id)
-        if not user:
-            continue
-
-        username = user.Username
+        user_id = item.UserID  # Get the centra ID directly
 
         # Check item type to determine structure
         if item_type.lower() == 'dry_leaves':
@@ -1440,11 +1736,11 @@ def get_items(db: Session, item_type: str, limit: int = 100):
         elif item_type.lower() == 'flour':
             item_data = {"id": item.FlourID, "weight": item.Flour_Weight}
        
-        # Group by username
-        if username not in grouped_data:
-            grouped_data[username] = [item_data]
+        # Group by user_id (centra ID)
+        if user_id not in grouped_data:
+            grouped_data[user_id] = [item_data]
         else:
-            grouped_data[username].append(item_data)
+            grouped_data[user_id].append(item_data)
 
     return grouped_data
 
@@ -1452,9 +1748,15 @@ def get_items_by_selected_centra(db: Session, item_type: str, users: List[UUID])
     # Convert UUIDs to strings to match the VARCHAR column type
     user_ids = [str(user_id) for user_id in users]
     if item_type.lower() == 'flour':
-        items = db.query(models.Flour).order_by(func.random()).filter(models.Flour.UserID.in_(user_ids)).all()
+        items = db.query(models.Flour).filter(
+            models.Flour.UserID.in_(user_ids),
+            models.Flour.Status == "Awaiting"
+        ).order_by(func.random()).all()
     elif item_type.lower() == 'dry_leaves':
-        items = db.query(models.DryLeaves).order_by(func.random()).filter(models.DryLeaves.UserID.in_(user_ids)).all()
+        items = db.query(models.DryLeaves).filter(
+            models.DryLeaves.UserID.in_(user_ids),
+            models.DryLeaves.Status == "Awaiting"
+        ).order_by(func.random()).all()
     else:
         raise ValueError("Invalid item type. Choose 'flour' or 'dry_leaves'.")
 
@@ -1462,61 +1764,21 @@ def get_items_by_selected_centra(db: Session, item_type: str, users: List[UUID])
 
     for item in items:
         user_id = item.UserID
-        user = get_user_by_id(db, user_id)
-        if not user:
-            continue
-
-        username = user.Username
+        
         item_data = {"id": item.DryLeavesID if item_type == 'dry_leaves' else item.FlourID,
                      "weight": item.Processed_Weight if item_type == 'dry_leaves' else item.Flour_Weight}
         
-        if username not in grouped_data:
-            grouped_data[username] = [item_data]
+        if user_id not in grouped_data:
+            grouped_data[user_id] = [item_data]
         else:
-            grouped_data[username].append(item_data)
+            grouped_data[user_id].append(item_data)
 
     return grouped_data
 
 def get_random_centras(db: Session, numOfCentra: int):
     return db.query(models.User).filter(models.User.RoleID == 1).order_by(func.random()).limit(numOfCentra).all()
 
-def get_random_items_by_centra(db: Session, item_type: str, numOfCentra: int):
-    centraList = get_random_centras(db, numOfCentra)
-    # Fetch data based on item type
-    if item_type.lower() == 'flour':
-        # Fetch flour items filtered by UserID from the selected centra
-        items = db.query(models.Flour).filter(models.Flour.UserID.in_([centra.UserID for centra in centraList])).order_by(func.random()).all()
-    elif item_type.lower() == 'dry_leaves':
-        # Fetch dry leaves items filtered by UserID from the selected centra
-        items = db.query(models.DryLeaves).filter(models.DryLeaves.UserID.in_([centra.UserID for centra in centraList])).order_by(func.random()).all()
-    else:
-        raise ValueError("Invalid item type. Choose 'flour' or 'dry_leaves'.")
-
-    # Initialize the dictionary to group items by username
-    grouped_data = {}
-
-    # Iterate through each item to populate grouped_data
-    for item in items:
-        user_id = item.UserID  # Assuming each item has a 'UserID' attribute
-        user = get_user_by_id(db, user_id)
-        if not user:
-            continue
-
-        username = user.Username
-
-        # Check item type to determine structure
-        if item_type.lower() == 'dry_leaves':
-            item_data = {"id": item.DryLeavesID, "weight": item.Processed_Weight}
-        elif item_type.lower() == 'flour':
-            item_data = {"id": item.FlourID, "weight": item.Flour_Weight}
-       
-        # Group by username
-        if username not in grouped_data:
-            grouped_data[username] = [item_data]
-        else:
-            grouped_data[username].append(item_data)
-
-    return grouped_data
+# Duplicate function removed - see implementation below
 
 def get_random_items_by_centra(db: Session, item_type: str, numOfCentra: int):
     centraList = get_random_centras(db, numOfCentra)
@@ -1530,17 +1792,12 @@ def get_random_items_by_centra(db: Session, item_type: str, numOfCentra: int):
     else:
         raise ValueError("Invalid item type. Choose 'flour' or 'dry_leaves'.")
 
-    # Initialize the dictionary to group items by username
+    # Initialize the dictionary to group items by user ID (centra ID)
     grouped_data = {}
 
     # Iterate through each item to populate grouped_data
     for item in items:
-        user_id = item.UserID  # Assuming each item has a 'UserID' attribute
-        user = get_user_by_id(db, user_id)
-        if not user:
-            continue
-
-        username = user.Username
+        user_id = item.UserID  # Get the centra ID directly
 
         # Check item type to determine structure
         if item_type.lower() == 'dry_leaves':
@@ -1548,11 +1805,11 @@ def get_random_items_by_centra(db: Session, item_type: str, numOfCentra: int):
         elif item_type.lower() == 'flour':
             item_data = {"id": item.FlourID, "weight": item.Flour_Weight}
        
-        # Group by username
-        if username not in grouped_data:
-            grouped_data[username] = [item_data]
+        # Group by user_id (centra ID)
+        if user_id not in grouped_data:
+            grouped_data[user_id] = [item_data]
         else:
-            grouped_data[username].append(item_data)
+            grouped_data[user_id].append(item_data)
 
     return grouped_data
 
@@ -1617,15 +1874,15 @@ def bulk_algorithm_by_random_items(db: Session, item_type: str, target_weight: i
         return memo.get((weight, idx), 0)
 
     def knapsack(target_weight: int, item_weights: dict[str, list[dict[str, int]]]):
-        items: list[tuple[int, str, int, int, bool, int]] = []  # Add `initial_price` to tuple
+        items: list[tuple[int, str, int, int, bool, int]] = []  # Keep str for centra_id (UUID string)
         memo.clear()
         next.clear()
 
-        for category, weights in item_weights.items():
+        for centra_id, weights in item_weights.items():
             items += [
                 (
                     item.get("weight", 0),
-                    category,
+                    centra_id,
                     item.get("id", 0),
                     item.get("price", 0),
                     item.get("discounted", False),
@@ -1636,15 +1893,15 @@ def bulk_algorithm_by_random_items(db: Session, item_type: str, target_weight: i
 
         max_value = dp(target_weight, 0, items)
 
-        choices: dict[str, list[dict[str, int]]] = {}
+        choices: dict[str, list[dict[str, int]]] = {}  # Keep str keys for UUID strings
         current = (target_weight, 0)
 
         while current in next:
-            weight, category, item_id, price, discounted, initial_price = items[current[1]]
+            weight, centra_id, item_id, price, discounted, initial_price = items[current[1]]
             if next[current][2]:
-                if category not in choices:
-                    choices[category] = []
-                choices[category].append({
+                if centra_id not in choices:
+                    choices[centra_id] = []
+                choices[centra_id].append({
                     "id": item_id,
                     "weight": weight,
                     "price": price,
@@ -1689,8 +1946,8 @@ def bulk_algorithm_by_selected_centra(db: Session, item_type: str, target_weight
         memo.clear()
         next_choice.clear()
         
-        for category, weights in item_weights.items():
-            items += [(item["weight"], category, item["id"]) for item in weights]
+        for centra_id, weights in item_weights.items():
+            items += [(item["weight"], centra_id, item["id"]) for item in weights]
 
         max_value = dp(target_weight, 0, items)
         
@@ -1698,11 +1955,11 @@ def bulk_algorithm_by_selected_centra(db: Session, item_type: str, target_weight
         current = (target_weight, 0)
 
         while next_choice.get(current):
-            weight, category, item_id = items[current[1]]
+            weight, centra_id, item_id = items[current[1]]
             if next_choice[current][2]:
-                if category not in choices:
-                    choices[category] = []
-                choices[category].append({"id": item_id, "weight": weight})
+                if centra_id not in choices:
+                    choices[centra_id] = []
+                choices[centra_id].append({"id": item_id, "weight": weight})
             current = next_choice[current][:2]
         
         return max_value, choices
@@ -1712,30 +1969,33 @@ def bulk_algorithm_by_selected_centra(db: Session, item_type: str, target_weight
     return max_value, choices
 
 def get_marketplace_items(db: Session, skip: int = 0, limit: int = 15):
-    # Queries for individual products
+    # Queries for individual products - only include available products
     wet = db.query(
         models.WetLeaves.WetLeavesID.label("id"),
         models.WetLeaves.UserID.label("user_id"),
         models.WetLeaves.Expiration.label("expiration"),
         models.WetLeaves.Weight.label("stock"),
+        models.WetLeaves.Status.label("status"),
         literal_column("'Wet Leaves'").label("product_name")
-    )
+    ).filter(models.WetLeaves.Status == "Awaiting")
 
     dry = db.query(
         models.DryLeaves.DryLeavesID.label("id"),
         models.DryLeaves.UserID.label("user_id"),
         models.DryLeaves.Expiration.label("expiration"),
         models.DryLeaves.Processed_Weight.label("stock"),
+        models.DryLeaves.Status.label("status"),
         literal_column("'Dry Leaves'").label("product_name")
-    )
+    ).filter(models.DryLeaves.Status == "Awaiting")
 
     flour = db.query(
         models.Flour.FlourID.label("id"),
         models.Flour.UserID.label("user_id"),
         models.Flour.Expiration.label("expiration"),
         models.Flour.Flour_Weight.label("stock"),
+        models.Flour.Status.label("status"),
         literal_column("'Powder'").label("product_name")
-    )
+    ).filter(models.Flour.Status == "Awaiting")
 
     # Combine queries with UNION ALL
     union_query = union_all(wet, dry, flour).alias("products")
@@ -1750,7 +2010,8 @@ def get_marketplace_items(db: Session, skip: int = 0, limit: int = 15):
         user_alias.Username.label("username"),
         union_query.c.expiration,
         union_query.c.product_name,
-        union_query.c.stock
+        union_query.c.stock,
+        union_query.c.status
     ).join(user_alias, union_query.c.user_id == user_alias.UserID
     ).filter(
         union_query.c.expiration > func.now()  # Filter out expired products
@@ -1786,7 +2047,8 @@ def get_marketplace_items(db: Session, skip: int = 0, limit: int = 15):
             "centra_name": row.username,
             "initial_price": price,
             "price": final_price,
-            "expiry_time": expdayleft
+            "expiry_time": expdayleft,
+            "status": row.status
         })
 
     return results
@@ -1799,6 +2061,7 @@ def get_product_details_by_product_id_and_product_name_and_username(db: Session,
                 models.WetLeaves.UserID.label("user_id"),
                 models.WetLeaves.Expiration.label("expiration"),
                 models.WetLeaves.Weight.label("weight"),
+                models.WetLeaves.Status.label("status"),
                 literal_column("'Wet Leaves'").label("product_name"),
                 models.User.Username.label("username"),
                 models.User.UserID.label("centra_id"))
@@ -1816,6 +2079,7 @@ def get_product_details_by_product_id_and_product_name_and_username(db: Session,
                 models.DryLeaves.UserID.label("user_id"),
                 models.DryLeaves.Expiration.label("expiration"),
                 models.DryLeaves.Processed_Weight.label("weight"),
+                models.DryLeaves.Status.label("status"),
                 literal_column("'Dry Leaves'").label("product_name"),
                 models.User.Username.label("username"),
                 models.User.UserID.label("centra_id"))
@@ -1834,6 +2098,7 @@ def get_product_details_by_product_id_and_product_name_and_username(db: Session,
                 models.Flour.UserID.label("user_id"),
                 models.Flour.Expiration.label("expiration"),
                 models.Flour.Flour_Weight.label("weight"),
+                models.Flour.Status.label("status"),
                 literal_column("'Powder'").label("product_name"),
                 models.User.Username.label("username"),
                 models.User.UserID.label("centra_id"))
@@ -1876,7 +2141,8 @@ def get_product_details_by_product_id_and_product_name_and_username(db: Session,
         "initial_price": price,
         "price": final_price,
         "expiry_time": expdayleft,
-        "centra_id": product.centra_id
+        "centra_id": product.centra_id,
+        "status": product.status
     }
     
 def create_new_transaction(db: Session, market_shipment: schemas.MarketShipmentCreate):
@@ -1893,42 +2159,91 @@ def create_new_transaction(db: Session, market_shipment: schemas.MarketShipmentC
     if not customer_user or customer_user.RoleID != 5:
         raise HTTPException(status_code=400, detail="CustomerID must reference a user with the 'Customer' role.")
 
-    # Step 1: Create Transaction (✅ now includes CustomerID)
-    transaction_id = str(uuid.uuid4())
-    db_transaction = models.Transaction(
-        TransactionID=transaction_id,
-        CustomerID=customer_id_str  # ✅ moved here
-    )
-    db.add(db_transaction)
-    db.commit()
-    db.refresh(db_transaction)
+    # Database transaction with row-level locking
+    try:
+        # Lock the specific product row to prevent concurrent modifications
+        product_table = None
+        product_query = None
+        
+        if market_shipment.ProductTypeID == 1:  # Wet Leaves
+            product_table = models.WetLeaves
+            product_query = db.query(models.WetLeaves).filter(
+                models.WetLeaves.WetLeavesID == market_shipment.ProductID
+            ).with_for_update(nowait=False)
+        elif market_shipment.ProductTypeID == 2:  # Dry Leaves
+            product_table = models.DryLeaves
+            product_query = db.query(models.DryLeaves).filter(
+                models.DryLeaves.DryLeavesID == market_shipment.ProductID
+            ).with_for_update(nowait=False)
+        elif market_shipment.ProductTypeID == 3:  # Flour
+            product_table = models.Flour
+            product_query = db.query(models.Flour).filter(
+                models.Flour.FlourID == market_shipment.ProductID
+            ).with_for_update(nowait=False)
+        else:
+            raise HTTPException(status_code=400, detail="Invalid ProductTypeID")
 
-    # Step 2: Create SubTransaction linked to the Transaction
-    db_sub_transaction = models.SubTransaction(
-        TransactionID=transaction_id
-    )
-    db.add(db_sub_transaction)
-    db.commit()
-    db.refresh(db_sub_transaction)
+        # Lock and validate the product exists and is available
+        locked_product = product_query.first()
+        if not locked_product:
+            raise HTTPException(status_code=404, detail="Product not found")
+        
+        # Check if product is available (not already processed or sold)
+        if hasattr(locked_product, 'Status') and locked_product.Status in ['Processed', 'Sold', 'Expired', 'Reserved']:
+            raise HTTPException(status_code=400, detail=f"Product is not available. Current status: {locked_product.Status}")
 
-    # Step 3: Create MarketShipment linked to the SubTransaction (✅ no more CustomerID here)
-    db_market_shipment = models.MarketShipment(
-        SubTransactionID=db_sub_transaction.SubTransactionID,
-        CentraID=market_shipment.CentraID,
-        ProductTypeID=market_shipment.ProductTypeID,
-        ProductID=market_shipment.ProductID,
-        Price=market_shipment.Price,
-        InitialPrice=market_shipment.InitialPrice,
-    )
-    db.add(db_market_shipment)
-    db.commit()
-    db.refresh(db_market_shipment)
+        # Check product ownership belongs to the centra
+        if locked_product.UserID != centra_id_str:
+            raise HTTPException(status_code=403, detail="Product does not belong to the specified centra")
 
-    return {
-        "transaction": db_transaction,
-        "sub_transaction": db_sub_transaction,
-        "market_shipment": db_market_shipment
-    }
+        # Step 1: Create Transaction (✅ now includes CustomerID)
+        transaction_id = str(uuid.uuid4())
+        db_transaction = models.Transaction(
+            TransactionID=transaction_id,
+            CustomerID=customer_id_str  # ✅ moved here
+        )
+        db.add(db_transaction)
+        db.flush()  # Use flush instead of commit to keep transaction open
+
+        # Step 2: Create SubTransaction linked to the Transaction
+        db_sub_transaction = models.SubTransaction(
+            TransactionID=transaction_id,
+            CentraID=market_shipment.CentraID
+        )
+        db.add(db_sub_transaction)
+        db.flush()
+
+        # Step 3: Create MarketShipment linked to the SubTransaction (✅ no more CustomerID here)
+        db_market_shipment = models.MarketShipment(
+            SubTransactionID=db_sub_transaction.SubTransactionID,
+            ProductTypeID=market_shipment.ProductTypeID,
+            ProductID=market_shipment.ProductID,
+            Price=market_shipment.Price,
+            InitialPrice=market_shipment.InitialPrice,
+        )
+        db.add(db_market_shipment)
+        db.flush()
+
+        # Update product status to "Reserved" to indicate it's part of a transaction
+        locked_product.Status = "Reserved"
+        db.flush()
+
+        # Commit the entire transaction
+        db.commit()
+
+        return {
+            "transaction": db_transaction,
+            "sub_transaction": db_sub_transaction,
+            "market_shipment": db_market_shipment,
+            "message": "Transaction created successfully with product locked"
+        }
+
+    except Exception as e:
+        # Rollback on any error
+        db.rollback()
+        if "could not obtain lock" in str(e).lower():
+            raise HTTPException(status_code=423, detail="Product is currently being processed by another transaction. Please try again.")
+        raise e
 
 def get_trx_id(db: Session, trx: schemas.blockchain_schemas):
     # Save the mapping between user_id and blockchain trx id
@@ -1960,3 +2275,218 @@ def get_blockchain_trx_by_trx_id(db: Session, trx_id: str):
 
 def get_all_blockchain_trx(db: Session):
     return db.query(models.BlockchainTrx).all()
+
+# Product status management with row-level locking
+def update_product_status_with_lock(db: Session, product_type_id: int, product_id: int, new_status: str):
+    """Update product status with row-level locking to prevent concurrent modifications"""
+    try:
+        # Lock the specific product row
+        if product_type_id == 1:  # Wet Leaves
+            product = db.query(models.WetLeaves).filter(
+                models.WetLeaves.WetLeavesID == product_id
+            ).with_for_update(nowait=False).first()
+        elif product_type_id == 2:  # Dry Leaves
+            product = db.query(models.DryLeaves).filter(
+                models.DryLeaves.DryLeavesID == product_id
+            ).with_for_update(nowait=False).first()
+        elif product_type_id == 3:  # Flour
+            product = db.query(models.Flour).filter(
+                models.Flour.FlourID == product_id
+            ).with_for_update(nowait=False).first()
+        else:
+            raise HTTPException(status_code=400, detail="Invalid ProductTypeID")
+
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        # Update the status
+        product.Status = new_status
+        db.flush()
+        db.commit()
+        
+        return product
+
+    except Exception as e:
+        db.rollback()
+        if "could not obtain lock" in str(e).lower():
+            raise HTTPException(status_code=423, detail="Product is currently being processed. Please try again.")
+        raise e
+
+def complete_transaction_and_process_product(db: Session, transaction_id: str, user_id: str):
+    """Complete a transaction and update product status to 'Processed' with proper locking"""
+    try:
+        # Lock and get the transaction
+        transaction = db.query(models.Transaction).filter(
+            models.Transaction.TransactionID == transaction_id
+        ).with_for_update(nowait=False).first()
+        
+        if not transaction:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        
+        # Get all market shipments for this transaction
+        market_shipments = (
+            db.query(models.MarketShipment)
+            .join(models.SubTransaction)
+            .filter(models.SubTransaction.TransactionID == transaction_id)
+            .with_for_update(nowait=False)
+            .all()
+        )
+        
+        # Update each product in the transaction to "Processed"
+        for shipment in market_shipments:
+            # Lock the specific product
+            if shipment.ProductTypeID == 1:  # Wet Leaves
+                product = db.query(models.WetLeaves).filter(
+                    models.WetLeaves.WetLeavesID == shipment.ProductID
+                ).with_for_update(nowait=False).first()
+            elif shipment.ProductTypeID == 2:  # Dry Leaves
+                product = db.query(models.DryLeaves).filter(
+                    models.DryLeaves.DryLeavesID == shipment.ProductID
+                ).with_for_update(nowait=False).first()
+            elif shipment.ProductTypeID == 3:  # Flour
+                product = db.query(models.Flour).filter(
+                    models.Flour.FlourID == shipment.ProductID
+                ).with_for_update(nowait=False).first()
+            
+            if product:
+                product.Status = "Processed"
+                shipment.ShipmentStatus = "processed"
+        
+        # Update transaction status
+        transaction.TransactionStatus = "Completed"
+        
+        db.flush()
+        db.commit()
+        
+        return {
+            "message": "Transaction completed and products processed successfully",
+            "transaction_id": transaction_id,
+            "processed_products": len(market_shipments)
+        }
+
+    except Exception as e:
+        db.rollback()
+        if "could not obtain lock" in str(e).lower():
+            raise HTTPException(status_code=423, detail="Transaction or products are currently being processed. Please try again.")
+        raise e
+
+def cancel_transaction_and_release_products(db: Session, transaction_id: str, user_id: str):
+    """Cancel a transaction and release locked products back to available status"""
+    try:
+        # Lock and get the transaction
+        transaction = db.query(models.Transaction).filter(
+            models.Transaction.TransactionID == transaction_id
+        ).with_for_update(nowait=False).first()
+        
+        if not transaction:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        
+        # Verify user has permission to cancel (either customer or centra)
+        sub_transactions = db.query(models.SubTransaction).filter(
+            models.SubTransaction.TransactionID == transaction_id
+        ).all()
+        
+        has_permission = False
+        if transaction.CustomerID == user_id:
+            has_permission = True
+        
+        for sub_trans in sub_transactions:
+            if sub_trans.CentraID == user_id:
+                has_permission = True
+                break
+        
+        if not has_permission:
+            raise HTTPException(status_code=403, detail="You don't have permission to cancel this transaction")
+        
+        # Get all market shipments for this transaction
+        market_shipments = (
+            db.query(models.MarketShipment)
+            .join(models.SubTransaction)
+            .filter(models.SubTransaction.TransactionID == transaction_id)
+            .with_for_update(nowait=False)
+            .all()
+        )
+        
+        # Release each product back to available status
+        for shipment in market_shipments:
+            # Lock the specific product
+            if shipment.ProductTypeID == 1:  # Wet Leaves
+                product = db.query(models.WetLeaves).filter(
+                    models.WetLeaves.WetLeavesID == shipment.ProductID
+                ).with_for_update(nowait=False).first()
+            elif shipment.ProductTypeID == 2:  # Dry Leaves
+                product = db.query(models.DryLeaves).filter(
+                    models.DryLeaves.DryLeavesID == shipment.ProductID
+                ).with_for_update(nowait=False).first()
+            elif shipment.ProductTypeID == 3:  # Flour
+                product = db.query(models.Flour).filter(
+                    models.Flour.FlourID == shipment.ProductID
+                ).with_for_update(nowait=False).first()
+            
+            if product and product.Status == "Reserved":
+                product.Status = "Awaiting"  # Release back to available
+                shipment.ShipmentStatus = "cancelled"
+        
+        # Update transaction status
+        transaction.TransactionStatus = "Cancelled"
+        
+        db.flush()
+        db.commit()
+        
+        return {
+            "message": "Transaction cancelled and products released successfully",
+            "transaction_id": transaction_id,
+            "released_products": len(market_shipments)
+        }
+
+    except Exception as e:
+        db.rollback()
+        if "could not obtain lock" in str(e).lower():
+            raise HTTPException(status_code=423, detail="Transaction or products are currently being processed. Please try again.")
+        raise e
+
+def get_product_lock_status(db: Session, product_type_id: int, product_id: int):
+    """Check if a product is currently locked (reserved) in any active transaction"""
+    try:
+        # Check if product exists and get its current status
+        if product_type_id == 1:  # Wet Leaves
+            product = db.query(models.WetLeaves).filter(
+                models.WetLeaves.WetLeavesID == product_id
+            ).first()
+        elif product_type_id == 2:  # Dry Leaves
+            product = db.query(models.DryLeaves).filter(
+                models.DryLeaves.DryLeavesID == product_id
+            ).first()
+        elif product_type_id == 3:  # Flour
+            product = db.query(models.Flour).filter(
+                models.Flour.FlourID == product_id
+            ).first()
+        else:
+            raise HTTPException(status_code=400, detail="Invalid ProductTypeID")
+
+        if not product:
+            raise HTTPException(status_code=404, detail="Product not found")
+
+        # Check if product is in any active transactions
+        active_shipments = (
+            db.query(models.MarketShipment)
+            .join(models.SubTransaction)
+            .join(models.Transaction)
+            .filter(
+                models.MarketShipment.ProductTypeID == product_type_id,
+                models.MarketShipment.ProductID == product_id,
+                models.Transaction.TransactionStatus.in_(["Transaction Pending", "Processing"])
+            )
+            .first()
+        )
+
+        return {
+            "product_id": product_id,
+            "product_type_id": product_type_id,
+            "current_status": product.Status,
+            "is_locked": product.Status == "Reserved" or active_shipments is not None,
+            "active_transaction": active_shipments.sub_transaction.TransactionID if active_shipments else None
+        }
+
+    except Exception as e:
+        raise e

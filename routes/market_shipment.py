@@ -16,6 +16,11 @@ def create_market_shipment(market_shipment: MarketShipmentCreate, db: Session = 
 def get_market_shipments(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     return crud.get_market_shipments(db=db, skip=skip, limit=limit)
 
+@router.get("/market_shipments/centra/{centra_id}", response_model=List[MarketShipment], tags=["MarketShipment"])
+def get_market_shipments_by_centra(centra_id: str, skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+    """Get market shipments for a specific centra"""
+    return crud.get_market_shipments_by_centra_id(db=db, centra_id=centra_id, skip=skip, limit=limit)
+
 @router.get("/market_shipment/get/{market_shipment_id}", response_model=MarketShipment, tags=["MarketShipment"])
 def get_market_shipment(market_shipment_id: int, db: Session = Depends(get_db)):
     market_shipment = crud.get_market_shipment_by_id(db=db, market_shipment_id=market_shipment_id)
@@ -26,6 +31,14 @@ def get_market_shipment(market_shipment_id: int, db: Session = Depends(get_db)):
 @router.put("/market_shipment/put/{market_shipment_id}", response_model=MarketShipment, tags=["MarketShipment"])
 def update_market_shipment(market_shipment_id: int, market_shipment_update: MarketShipmentUpdate, db: Session = Depends(get_db)):
     updated_market_shipment = crud.update_market_shipment(db=db, market_shipment_id=market_shipment_id, market_shipment_update=market_shipment_update)
+    if not updated_market_shipment:
+        raise HTTPException(status_code=404, detail="MarketShipment not found")
+    return updated_market_shipment
+
+@router.put("/market_shipment/{market_shipment_id}/status", response_model=MarketShipment, tags=["MarketShipment"])
+def update_market_shipment_status(market_shipment_id: int, status: str, db: Session = Depends(get_db)):
+    """Update the status of a market shipment"""
+    updated_market_shipment = crud.update_market_shipment_status(db=db, market_shipment_id=market_shipment_id, status=status)
     if not updated_market_shipment:
         raise HTTPException(status_code=404, detail="MarketShipment not found")
     return updated_market_shipment

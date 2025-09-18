@@ -10,6 +10,7 @@ class InvoiceRequest(BaseModel):
     description: str
     success_redirect_url: str
     failure_redirect_url: str
+    invoice_duration: Optional[int] = None  # Duration in seconds from creation
 
 class XenditInvoiceRequestBody(BaseModel):
     id: str

@@ -13,6 +13,8 @@ import models
 from models import Flour,WetLeaves,DryLeaves
 from dotenv import load_dotenv
 import os
+import logging
+from email_service import EmailService, create_receipt_email_body
 
 router = APIRouter()
 
@@ -217,7 +219,99 @@ def test():
     return {"message": "Triggered"}
 
 
-#WEBHOOK: Change status to "On Delivery" if paid
+@router.post("/test-receipt/{transaction_id}", tags=["Testing"])
+async def test_receipt_email(transaction_id: str, db: Session = Depends(get_db)):
+    """Test endpoint to manually send receipt for a transaction"""
+    try:
+        # Get transaction
+        transaction = db.query(models.Transaction).filter_by(TransactionID=transaction_id).first()
+        if not transaction:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        
+        # Get customer
+        customer = db.query(models.User).filter_by(UserID=transaction.CustomerID).first()
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        
+        # Get transaction details
+        transaction_details = crud.get_transaction_details_by_id(
+            db=db, 
+            transaction_id=transaction_id, 
+            session_data=type('obj', (object,), {'UserID': transaction.CustomerID})()
+        )
+        
+        # Create mock payment payload for testing
+        mock_payload = type('obj', (object,), {
+            'paid_at': datetime.now(),
+            'payment_method': 'Test Payment'
+        })()
+        
+        # Generate PDF receipt
+        receipt_pdf = await generate_receipt_pdf(transaction_details, customer, mock_payload)
+        
+        # Send email
+        email_service = EmailService()
+        email_subject = f"🧾 Test Receipt for Order #{transaction_id[:8]} - Leafty"
+        email_body = create_receipt_email_body(transaction_details, customer.Username)
+        
+        email_sent = email_service.send_email_with_attachment(
+            to_email=customer.Email,
+            subject=email_subject,
+            body=email_body,
+            attachment_content=receipt_pdf,
+            attachment_filename=f"test_receipt_{transaction_id}.pdf"
+        )
+        
+        if email_sent:
+            return {"message": f"Test receipt sent successfully to {customer.Email}"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to send test receipt")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Test receipt failed: {str(e)}")
+
+
+@router.get("/receipt/{transaction_id}", tags=["Receipts"])
+async def download_receipt(transaction_id: str, db: Session = Depends(get_db)):
+    """Download receipt PDF for a transaction"""
+    try:
+        # Get transaction
+        transaction = db.query(models.Transaction).filter_by(TransactionID=transaction_id).first()
+        if not transaction:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        
+        # Get customer
+        customer = db.query(models.User).filter_by(UserID=transaction.CustomerID).first()
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+        
+        # Get transaction details
+        transaction_details = crud.get_transaction_details_by_id(
+            db=db, 
+            transaction_id=transaction_id, 
+            session_data=type('obj', (object,), {'UserID': transaction.CustomerID})()
+        )
+        
+        # Create mock payment payload
+        mock_payload = type('obj', (object,), {
+            'paid_at': datetime.now(),
+            'payment_method': 'Xendit Payment'
+        })()
+        
+        # Generate PDF receipt
+        receipt_pdf = await generate_receipt_pdf(transaction_details, customer, mock_payload)
+        
+        return Response(
+            content=receipt_pdf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=receipt_{transaction_id}.pdf"}
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Receipt generation failed: {str(e)}")
+
+
+#WEBHOOK: Change status to "On Delivery" if paid and send receipt
 @router.post("/webhook/invoice-paid", tags=["Xendit Webhooks"])
 async def invoice_paid_webhook(payload: InvoicePaidWebhook, db: Session = Depends(get_db)):
     try:
@@ -226,9 +320,17 @@ async def invoice_paid_webhook(payload: InvoicePaidWebhook, db: Session = Depend
         
         transaction_id = payload.external_id.split('_')[-1]
 
+        # Get transaction with full details
         transaction = db.query(models.Transaction).filter_by(TransactionID=transaction_id).first()
         if not transaction:
             raise HTTPException(status_code=404, detail="Transaction not found")
+        
+        # Get customer details
+        customer = db.query(models.User).filter_by(UserID=transaction.CustomerID).first()
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+        # Update transaction status
         transaction.TransactionStatus = "On Delivery"
 
         for sub_tx in transaction.sub_transactions:
@@ -252,9 +354,106 @@ async def invoice_paid_webhook(payload: InvoicePaidWebhook, db: Session = Depend
                         flour.Status = "On Delivery"
 
         db.commit()
-        return {"message": f"Transaction {transaction_id} and related products updated to 'On Delivery'"}
+
+        # Generate and send receipt
+        try:
+            # Get full transaction details for receipt
+            transaction_details = crud.get_transaction_details_by_id(
+                db=db, 
+                transaction_id=transaction_id, 
+                session_data=type('obj', (object,), {'UserID': transaction.CustomerID})()
+            )
+            
+            # Generate PDF receipt
+            receipt_pdf = await generate_receipt_pdf(transaction_details, customer, payload)
+            
+            # Send email with receipt
+            email_service = EmailService()
+            email_subject = f"🧾 Receipt for Order #{transaction_id[:8]} - Leafty"
+            email_body = create_receipt_email_body(transaction_details, customer.Username)
+            
+            email_sent = email_service.send_email_with_attachment(
+                to_email=customer.Email,
+                subject=email_subject,
+                body=email_body,
+                attachment_content=receipt_pdf,
+                attachment_filename=f"receipt_{transaction_id}.pdf"
+            )
+            
+            if email_sent:
+                logging.info(f"Receipt sent successfully to {customer.Email} for transaction {transaction_id}")
+            else:
+                logging.error(f"Failed to send receipt to {customer.Email} for transaction {transaction_id}")
+                
+        except Exception as email_error:
+            logging.error(f"Error sending receipt email: {str(email_error)}")
+            # Don't fail the webhook if email fails
+            
+        return {"message": f"Transaction {transaction_id} updated to 'On Delivery' and receipt sent to {customer.Email}"}
 
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
+
+
+async def generate_receipt_pdf(transaction_details: dict, customer: models.User, payment_payload: InvoicePaidWebhook) -> bytes:
+    """Generate a beautiful PDF receipt using the existing invoice generator"""
+    
+    # Calculate totals
+    subtotal = 0
+    items_list = []
+    
+    for sub_tx in transaction_details['sub_transactions']:
+        for shipment in sub_tx['market_shipments']:
+            item_total = shipment['Price'] * shipment['Weight']
+            subtotal += item_total
+            
+            items_list.append({
+                "name": f"{shipment['ProductName']} (from {sub_tx['CentraUsername']})",
+                "quantity": shipment['Weight'],
+                "unit_cost": shipment['Price']
+            })
+    
+    # Admin fee calculation
+    admin_fee = subtotal * 0.05  # 5% admin fee
+    total_amount = subtotal + admin_fee
+    
+    # Prepare receipt data
+    receipt_payload = {
+        "logo": encoded_logo,
+        "from": "Leafty Marketplace\nJl. Kebon Jeruk No. 123\nJakarta, Indonesia\nPhone: +62-21-1234-5678\nEmail: support@leafty.com",
+        "to": f"{customer.Username}\n{customer.Email}\nCustomer ID: {customer.UserID}",
+        "number": f"RCP-{transaction_details['TransactionID'][:8]}",
+        "currency": "IDR",
+        "date": pd.to_datetime(transaction_details['CreatedAt']).strftime('%d/%m/%Y - %H:%M:%S'),
+        "due_date": pd.to_datetime(payment_payload.paid_at).strftime('%d/%m/%Y - %H:%M:%S') if payment_payload.paid_at else "",
+        "payment_terms": "Paid via Xendit",
+        "items": items_list,
+        "tax": 0,
+        "discounts": 0,
+        "shipping": admin_fee,  # Using shipping field for admin fee
+        "amount_paid": total_amount,
+        "notes": f"Payment Method: {payment_payload.payment_method}\nTransaction Status: On Delivery\nThank you for choosing Leafty!",
+        "terms": "This receipt serves as proof of payment. Keep this for your records.\nFor support, contact us at support@leafty.com"
+    }
+
+    # Remove keys with None values
+    receipt_payload = {k: v for k, v in receipt_payload.items() if v is not None}
+    headers = {
+        "Authorization": f"Bearer {INVOICE_API_KEY}"
+    }
+
+    try:
+        # Send POST request to Invoice Generator API
+        async with httpx.AsyncClient() as client:
+            response = await client.post(INVOICE_API_URL, json=receipt_payload, headers=headers)
+            
+            if response.status_code == 200:
+                return response.content
+            else:
+                raise Exception(f"Failed to generate receipt PDF. Status: {response.status_code}")
+                
+    except Exception as e:
+        logging.error(f"Error generating receipt PDF: {str(e)}")
+        raise Exception(f"Failed to generate receipt: {str(e)}")
 

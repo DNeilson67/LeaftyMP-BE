@@ -45,8 +45,8 @@ class SubTransaction(SubTransactionBase):
 
 class TransactionCreate(BaseModel):
     CustomerID: UUID4
-    TransactionStatus: Optional[str] = "pending"
     sub_transactions: List[SubTransactionCreate]
+    # Removed TransactionStatus - will default to "Transaction Pending"
 
 class TransactionUpdate(BaseModel):
     TransactionStatus: Optional[str] = None
@@ -86,6 +86,29 @@ class TransactionDisplayBase(BaseModel):
     sub_transactions: List[SubTransactionDisplayBase]
     class Config:
         orm_mode = True
+
+# Bulk Transaction Schemas
+class BulkMarketShipmentItem(BaseModel):
+    """Individual item in a bulk transaction"""
+    CentraID: str
+    ProductTypeID: int
+    ProductID: int
+    Price: float
+    InitialPrice: float
+    Weight: float
+    # Removed ProductName - not needed for backend
+
+class BulkTransactionCreate(BaseModel):
+    """Schema for creating bulk transactions with multiple items"""
+    items: List[BulkMarketShipmentItem]
+    # Removed TransactionStatus - will default to "Transaction Pending"
+
+class BulkTransactionResponse(BaseModel):
+    """Response schema for bulk transaction creation"""
+    TransactionID: str
+    message: str
+    total_items: int
+    failed_items: Optional[List[dict]] = None
 
 
 
