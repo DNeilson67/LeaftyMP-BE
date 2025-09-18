@@ -37,7 +37,8 @@ app.add_middleware(
         "http://localhost:8000", 
         "http://localhost:5004", 
         "https://leafty.csbihub.id", 
-        "https://leafty-rest-api.csbihub.id"
+        "https://leafty-rest-api.csbihub.id",
+        "https://leafty-mp.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -82,4 +83,5 @@ app.include_router(statistics.router, tags=["Statistics"])
 app.include_router(marketplace.router, tags=["Marketplace"], dependencies=[Depends(cookie)])
 app.include_router(pub_marketplace.router, tags=["Marketplace"])
 app.include_router(bulk_algorithm.router, tags=["Bulk Algorithm"])
+
 
