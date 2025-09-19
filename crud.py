@@ -1341,20 +1341,78 @@ def create_bulk_transaction_by_customer(db: Session, bulk_transaction: schemas.B
 
 # Market Shipment CRUD functions
 def get_market_shipments(db: Session, skip: int = 0, limit: int = 10):
-    return db.query(models.MarketShipment).offset(skip).limit(limit).all()
+    results = (
+        db.query(models.MarketShipment, models.SubTransaction.CentraID)
+        .join(models.SubTransaction, models.MarketShipment.SubTransactionID == models.SubTransaction.SubTransactionID)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    
+    # Convert results to include CentraID in MarketShipment objects
+    market_shipments = []
+    for market_shipment, centra_id_value in results:
+        # Create a dict from the MarketShipment object and add CentraID
+        shipment_dict = {
+            "MarketShipmentID": market_shipment.MarketShipmentID,
+            "CentraID": centra_id_value,
+            "ProductTypeID": market_shipment.ProductTypeID,
+            "ProductID": market_shipment.ProductID,
+            "Price": market_shipment.Price,
+            "InitialPrice": market_shipment.InitialPrice,
+            "ShipmentStatus": market_shipment.ShipmentStatus
+        }
+        market_shipments.append(shipment_dict)
+    
+    return market_shipments
 
 def get_market_shipment_by_id(db: Session, market_shipment_id: int):
-    return db.query(models.MarketShipment).filter(models.MarketShipment.MarketShipmentID == market_shipment_id).first()
+    result = (
+        db.query(models.MarketShipment, models.SubTransaction.CentraID)
+        .join(models.SubTransaction, models.MarketShipment.SubTransactionID == models.SubTransaction.SubTransactionID)
+        .filter(models.MarketShipment.MarketShipmentID == market_shipment_id)
+        .first()
+    )
+    
+    if result:
+        market_shipment, centra_id_value = result
+        return {
+            "MarketShipmentID": market_shipment.MarketShipmentID,
+            "CentraID": centra_id_value,
+            "ProductTypeID": market_shipment.ProductTypeID,
+            "ProductID": market_shipment.ProductID,
+            "Price": market_shipment.Price,
+            "InitialPrice": market_shipment.InitialPrice,
+            "ShipmentStatus": market_shipment.ShipmentStatus
+        }
+    return None
 
 def get_market_shipments_by_centra_id(db: Session, centra_id: str, skip: int = 0, limit: int = 10):
-    return (
-        db.query(models.MarketShipment)
+    results = (
+        db.query(models.MarketShipment, models.SubTransaction.CentraID)
         .join(models.SubTransaction, models.MarketShipment.SubTransactionID == models.SubTransaction.SubTransactionID)
         .filter(models.SubTransaction.CentraID == centra_id)
         .offset(skip)
         .limit(limit)
         .all()
     )
+    
+    # Convert results to include CentraID in MarketShipment objects
+    market_shipments = []
+    for market_shipment, centra_id_value in results:
+        # Create a dict from the MarketShipment object and add CentraID
+        shipment_dict = {
+            "MarketShipmentID": market_shipment.MarketShipmentID,
+            "CentraID": centra_id_value,
+            "ProductTypeID": market_shipment.ProductTypeID,
+            "ProductID": market_shipment.ProductID,
+            "Price": market_shipment.Price,
+            "InitialPrice": market_shipment.InitialPrice,
+            "ShipmentStatus": market_shipment.ShipmentStatus
+        }
+        market_shipments.append(shipment_dict)
+    
+    return market_shipments
 
 def update_market_shipment(db: Session, market_shipment_id: int, market_shipment_update: schemas.MarketShipmentUpdate):
     db_market_shipment = db.query(models.MarketShipment).filter(models.MarketShipment.MarketShipmentID == market_shipment_id).first()

@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 import smtplib
 from dotenv import load_dotenv
 import os
+from email_service import send_otp_email
 
 router = APIRouter()
 
@@ -182,3 +183,23 @@ def verify_otp(request: VerifyOTPRequest, db: Session = Depends(get_db)):
     crud.delete_otp(db, email)
     
     return {"message": "OTP verified successfully"}
+
+@router.post("/test-otp-email/{email}")
+def test_otp_email(email: str):
+    """Test endpoint to send OTP email with the new design"""
+    import random
+    
+    # Generate a 6-digit OTP
+    otp_code = str(random.randint(100000, 999999))
+    
+    # Send OTP email
+    success = send_otp_email(email, otp_code, expiry_minutes=10)
+    
+    if success:
+        return {
+            "message": f"OTP email sent successfully to {email}",
+            "otp_code": otp_code,  # Remove this in production
+            "note": "OTP code is shown here for testing purposes only"
+        }
+    else:
+        raise HTTPException(status_code=500, detail="Failed to send OTP email")

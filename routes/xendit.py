@@ -262,6 +262,8 @@ async def test_receipt_email(transaction_id: str, db: Session = Depends(get_db))
             attachment_filename=f"test_receipt_{transaction_id}.pdf"
         )
         
+        print(email_sent)
+        
         if email_sent:
             return {"message": f"Test receipt sent successfully to {customer.Email}"}
         else:
@@ -399,6 +401,12 @@ async def invoice_paid_webhook(payload: InvoicePaidWebhook, db: Session = Depend
 async def generate_receipt_pdf(transaction_details: dict, customer: models.User, payment_payload: InvoicePaidWebhook) -> bytes:
     """Generate a beautiful PDF receipt using the existing invoice generator"""
     
+    # Validate inputs
+    if not customer:
+        raise ValueError("Customer object is None")
+    if not transaction_details:
+        raise ValueError("Transaction details are None")
+    
     # Calculate totals
     subtotal = 0
     items_list = []
@@ -418,22 +426,35 @@ async def generate_receipt_pdf(transaction_details: dict, customer: models.User,
     admin_fee = subtotal * 0.05  # 5% admin fee
     total_amount = subtotal + admin_fee
     
-    # Prepare receipt data
+    # Prepare receipt data with proper null handling
+    paid_date = ""
+    payment_method = "Unknown"
+    
+    if hasattr(payment_payload, 'paid_at') and payment_payload.paid_at:
+        try:
+            paid_date = pd.to_datetime(payment_payload.paid_at).strftime('%d/%m/%Y - %H:%M:%S')
+        except Exception as e:
+            logging.warning(f"Failed to parse paid_at date: {e}")
+            paid_date = "Unknown"
+    
+    if hasattr(payment_payload, 'payment_method') and payment_payload.payment_method:
+        payment_method = str(payment_payload.payment_method)
+    
     receipt_payload = {
         "logo": encoded_logo,
         "from": "Leafty Marketplace\nJl. Kebon Jeruk No. 123\nJakarta, Indonesia\nPhone: +62-21-1234-5678\nEmail: support@leafty.com",
-        "to": f"{customer.Username}\n{customer.Email}\nCustomer ID: {customer.UserID}",
+        "to": f"{customer.Username or 'N/A'}\n{customer.Email or 'N/A'}\nCustomer ID: {customer.UserID}",
         "number": f"RCP-{transaction_details['TransactionID'][:8]}",
         "currency": "IDR",
         "date": pd.to_datetime(transaction_details['CreatedAt']).strftime('%d/%m/%Y - %H:%M:%S'),
-        "due_date": pd.to_datetime(payment_payload.paid_at).strftime('%d/%m/%Y - %H:%M:%S') if payment_payload.paid_at else "",
+        "due_date": paid_date,
         "payment_terms": "Paid via Xendit",
         "items": items_list,
         "tax": 0,
         "discounts": 0,
         "shipping": admin_fee,  # Using shipping field for admin fee
         "amount_paid": total_amount,
-        "notes": f"Payment Method: {payment_payload.payment_method}\nTransaction Status: On Delivery\nThank you for choosing Leafty!",
+        "notes": f"Payment Method: {payment_method}\nTransaction Status: On Delivery\nThank you for choosing Leafty!",
         "terms": "This receipt serves as proof of payment. Keep this for your records.\nFor support, contact us at support@leafty.com"
     }
 
