@@ -37,7 +37,8 @@ app.add_middleware(
         "http://localhost:8000", 
         "http://localhost:5004", 
         "https://leafty.csbihub.id", 
-        "https://leafty-rest-api.csbihub.id"
+        "https://leafty-rest-api.csbihub.id",
+        "https://leafty-mp.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],
