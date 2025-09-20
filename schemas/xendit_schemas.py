@@ -55,6 +55,5 @@ class InvoicePaidWebhook(BaseModel):
     currency: str
     payment_channel: str
     payment_destination: str
-    payment_id: str
     failure_redirect_url: Optional[str] = None
     success_redirect_url: Optional[str] = None
