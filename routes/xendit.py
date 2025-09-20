@@ -313,49 +313,74 @@ async def download_receipt(transaction_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Receipt generation failed: {str(e)}")
 
 
-#WEBHOOK: Change status to "On Delivery" if paid and send receipt
 @router.post("/webhook/invoice-paid", tags=["Xendit Webhooks"])
 async def invoice_paid_webhook(payload: InvoicePaidWebhook, db: Session = Depends(get_db)):
     try:
+        # Log the incoming webhook payload for debugging
+        logging.info(f"Received webhook for external_id: {payload.external_id}, status: {payload.status}")
+        
         if payload.status != "PAID":
+            logging.info(f"Ignored webhook. Status is {payload.status}")
             return {"message": f"Ignored. Status is {payload.status}"}
         
         transaction_id = payload.external_id.split('_')[-1]
+        logging.info(f"Processing payment for transaction_id: {transaction_id}")
 
-        # Get transaction with full details
-        transaction = db.query(models.Transaction).filter_by(TransactionID=transaction_id).first()
+        # Get transaction with row-level locking to prevent concurrent modifications
+        transaction = db.query(models.Transaction).filter_by(
+            TransactionID=transaction_id
+        ).with_for_update(nowait=False).first()
+        
         if not transaction:
+            logging.error(f"Transaction {transaction_id} not found")
             raise HTTPException(status_code=404, detail="Transaction not found")
+        
+        # Check if transaction is already processed (idempotency)
+        if transaction.TransactionStatus == "On Delivery":
+            logging.info(f"Transaction {transaction_id} already processed")
+            return {"message": f"Transaction {transaction_id} already processed"}
         
         # Get customer details
         customer = db.query(models.User).filter_by(UserID=transaction.CustomerID).first()
         if not customer:
+            logging.error(f"Customer {transaction.CustomerID} not found")
             raise HTTPException(status_code=404, detail="Customer not found")
 
         # Update transaction status
         transaction.TransactionStatus = "On Delivery"
+        logging.info(f"Updated transaction {transaction_id} status to 'On Delivery'")
 
+        # Update sub-transactions and market shipments
         for sub_tx in transaction.sub_transactions:
             sub_tx.SubTransactionStatus = "On Delivery"  
+            logging.info(f"Updated sub-transaction {sub_tx.SubTransactionID} status to 'On Delivery'")
+            
             for shipment in sub_tx.market_shipments:
                 shipment.ShipmentStatus = "On Delivery"
+                logging.info(f"Updated market shipment {shipment.MarketShipmentID} status to 'On Delivery'")
 
+                # Update individual product statuses
                 if shipment.ProductTypeID == 1:
                     wetleaf = db.query(WetLeaves).filter_by(WetLeavesID=shipment.ProductID).first()
                     if wetleaf:
                         wetleaf.Status = "On Delivery"
+                        logging.info(f"Updated WetLeaves {shipment.ProductID} status to 'On Delivery'")
 
                 elif shipment.ProductTypeID == 2:
                     dryleaf = db.query(DryLeaves).filter_by(DryLeavesID=shipment.ProductID).first()
                     if dryleaf:
                         dryleaf.Status = "On Delivery"
+                        logging.info(f"Updated DryLeaves {shipment.ProductID} status to 'On Delivery'")
 
                 elif shipment.ProductTypeID == 3:
                     flour = db.query(Flour).filter_by(FlourID=shipment.ProductID).first()
                     if flour:
                         flour.Status = "On Delivery"
+                        logging.info(f"Updated Flour {shipment.ProductID} status to 'On Delivery'")
 
+        # Commit all changes
         db.commit()
+        logging.info(f"Successfully committed all status updates for transaction {transaction_id}")
 
         # Generate and send receipt
         try:
@@ -394,6 +419,7 @@ async def invoice_paid_webhook(payload: InvoicePaidWebhook, db: Session = Depend
         return {"message": f"Transaction {transaction_id} updated to 'On Delivery' and receipt sent to {customer.Email}"}
 
     except Exception as e:
+        logging.error(f"Webhook processing failed: {str(e)}")
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
 

@@ -300,13 +300,26 @@ def update_wet_leaves(db: Session, wet_leaves_id: int, wet_leaves_update: schema
     return db_wet_leaves
 
 def update_wet_leaves_status(db: Session, wet_leaves_id: int, status_update: schemas.WetLeavesStatusUpdate):
-    db_wet_leaves = db.query(models.WetLeaves).filter(models.WetLeaves.WetLeavesID == wet_leaves_id).first()
-    if not db_wet_leaves:
-        return None
-    db_wet_leaves.Status = status_update.Status
-    db.commit()
-    db.refresh(db_wet_leaves)
-    return db_wet_leaves
+    """Update wet leaves status with row-level locking to prevent race conditions"""
+    try:
+        # Lock the specific wet leaves row to prevent concurrent modifications
+        db_wet_leaves = db.query(models.WetLeaves).filter(
+            models.WetLeaves.WetLeavesID == wet_leaves_id
+        ).with_for_update(nowait=False).first()
+        
+        if not db_wet_leaves:
+            return None
+            
+        db_wet_leaves.Status = status_update.Status
+        db.commit()
+        db.refresh(db_wet_leaves)
+        return db_wet_leaves
+        
+    except Exception as e:
+        db.rollback()
+        if "could not obtain lock" in str(e).lower():
+            raise HTTPException(status_code=423, detail="Wet leaves is currently being processed. Please try again.")
+        raise e
 
 # dry leaves
 def create_dry_leaves(db: Session, dry_leaves: schemas.DryLeavesCreate):
@@ -382,13 +395,26 @@ def update_dry_leaves(db: Session, dry_leaves_id: int, dry_leaves_update: schema
     return db_dry_leaves
 
 def update_dry_leaves_status(db: Session, dry_leaves_id: int, status_update: schemas.DryLeavesStatusUpdate):
-    db_dry_leaves = db.query(models.DryLeaves).filter(models.DryLeaves.DryLeavesID == dry_leaves_id).first()
-    if not db_dry_leaves:
-        return None
-    db_dry_leaves.Status = status_update.Status
-    db.commit()
-    db.refresh(db_dry_leaves)
-    return db_dry_leaves
+    """Update dry leaves status with row-level locking to prevent race conditions"""
+    try:
+        # Lock the specific dry leaves row to prevent concurrent modifications
+        db_dry_leaves = db.query(models.DryLeaves).filter(
+            models.DryLeaves.DryLeavesID == dry_leaves_id
+        ).with_for_update(nowait=False).first()
+        
+        if not db_dry_leaves:
+            return None
+            
+        db_dry_leaves.Status = status_update.Status
+        db.commit()
+        db.refresh(db_dry_leaves)
+        return db_dry_leaves
+        
+    except Exception as e:
+        db.rollback()
+        if "could not obtain lock" in str(e).lower():
+            raise HTTPException(status_code=423, detail="Dry leaves is currently being processed. Please try again.")
+        raise e
 
 # flour
 def create_flour(db: Session, flour: schemas.FlourCreate):
@@ -457,13 +483,26 @@ def update_flour(db: Session, flour_id: int, flour_update: schemas.FlourUpdate):
     return db_flour
 
 def update_flour_status(db: Session, flour_id: int, status_update: schemas.FlourStatusUpdate):
-    db_flour = db.query(models.Flour).filter(models.Flour.FlourID == flour_id).first()
-    if not db_flour:
-        return None
-    db_flour.Status = status_update.Status
-    db.commit()
-    db.refresh(db_flour)
-    return db_flour
+    """Update flour status with row-level locking to prevent race conditions"""
+    try:
+        # Lock the specific flour row to prevent concurrent modifications
+        db_flour = db.query(models.Flour).filter(
+            models.Flour.FlourID == flour_id
+        ).with_for_update(nowait=False).first()
+        
+        if not db_flour:
+            return None
+            
+        db_flour.Status = status_update.Status
+        db.commit()
+        db.refresh(db_flour)
+        return db_flour
+        
+    except Exception as e:
+        db.rollback()
+        if "could not obtain lock" in str(e).lower():
+            raise HTTPException(status_code=423, detail="Flour is currently being processed. Please try again.")
+        raise e
 
 # shipment
 def create_shipment(db: Session, shipment: schemas.ShipmentCreate):
@@ -1021,6 +1060,33 @@ def create_market_shipment(db: Session, market_shipment: schemas.MarketShipmentC
 def get_market_shipments(db: Session, skip: int = 0, limit: int = 10):
     return db.query(models.MarketShipment).offset(skip).limit(limit).all()
 
+def get_market_shipments_with_centra(db: Session, skip: int = 0, limit: int = 10):
+    """Get market shipments with CentraID from SubTransaction join"""
+    results = (
+        db.query(models.MarketShipment, models.SubTransaction.CentraID)
+        .join(models.SubTransaction, models.MarketShipment.SubTransactionID == models.SubTransaction.SubTransactionID)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    
+    # Convert results to include CentraID in MarketShipment objects
+    market_shipments = []
+    for market_shipment, centra_id_value in results:
+        # Create a dict from the MarketShipment object and add CentraID
+        shipment_dict = {
+            "MarketShipmentID": market_shipment.MarketShipmentID,
+            "CentraID": centra_id_value,
+            "ProductTypeID": market_shipment.ProductTypeID,
+            "ProductID": market_shipment.ProductID,
+            "Price": market_shipment.Price,
+            "InitialPrice": market_shipment.InitialPrice,
+            "ShipmentStatus": market_shipment.ShipmentStatus
+        }
+        market_shipments.append(shipment_dict)
+    
+    return market_shipments
+
 def get_market_shipment_by_id(db: Session, market_shipment_id: int):
     return db.query(models.MarketShipment).filter(models.MarketShipment.MarketShipmentID == market_shipment_id).first()
 
@@ -1436,15 +1502,26 @@ def delete_market_shipment(db: Session, market_shipment_id: int):
     return False
 
 def update_market_shipment_status(db: Session, market_shipment_id: int, status: str):
-    """Update the shipment status of a market shipment"""
-    db_market_shipment = db.query(models.MarketShipment).filter(models.MarketShipment.MarketShipmentID == market_shipment_id).first()
-    if not db_market_shipment:
-        return None
-    
-    db_market_shipment.ShipmentStatus = status
-    db.commit()
-    db.refresh(db_market_shipment)
-    return db_market_shipment
+    """Update the shipment status of a market shipment with row-level locking to prevent race conditions"""
+    try:
+        # Lock the specific market shipment row to prevent concurrent modifications
+        db_market_shipment = db.query(models.MarketShipment).filter(
+            models.MarketShipment.MarketShipmentID == market_shipment_id
+        ).with_for_update(nowait=False).first()
+        
+        if not db_market_shipment:
+            return None
+        
+        db_market_shipment.ShipmentStatus = status
+        db.commit()
+        db.refresh(db_market_shipment)
+        return db_market_shipment
+        
+    except Exception as e:
+        db.rollback()
+        if "could not obtain lock" in str(e).lower():
+            raise HTTPException(status_code=423, detail="Market shipment is currently being processed. Please try again.")
+        raise e
 
 # --- Get All Transactions ---
 def get_transactions(db: Session, skip: int = 0, limit: int = 10):

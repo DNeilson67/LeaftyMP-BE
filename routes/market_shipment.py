@@ -4,7 +4,9 @@ from requests import Session
 from fastapi.responses import JSONResponse
 import crud
 from database import get_db
-from schemas.transaction_schemas import MarketShipment, MarketShipmentCreate, MarketShipmentUpdate
+from schemas.transaction_schemas import MarketShipment, MarketShipmentCreate, MarketShipmentUpdate, MarketShipmentWithCentra
+from schemas.user_schemas import SessionData
+from routes.auth import verifier, cookie
 
 router = APIRouter()
 
@@ -12,14 +14,41 @@ router = APIRouter()
 def create_market_shipment(market_shipment: MarketShipmentCreate, db: Session = Depends(get_db)):
     return crud.create_market_shipment(db=db, market_shipment=market_shipment)
 
-@router.get("/market_shipments/get", response_model=List[MarketShipment], tags=["MarketShipment"])
+@router.get("/market_shipments/get", response_model=List[MarketShipmentWithCentra], tags=["MarketShipment"])
 def get_market_shipments(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    return crud.get_market_shipments(db=db, skip=skip, limit=limit)
+    return crud.get_market_shipments_with_centra(db=db, skip=skip, limit=limit)
 
-@router.get("/market_shipments/centra/{centra_id}", response_model=List[MarketShipment], tags=["MarketShipment"])
+@router.get("/market_shipments/centra/{centra_id}", response_model=List[MarketShipmentWithCentra], tags=["MarketShipment"])
 def get_market_shipments_by_centra(centra_id: str, skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     """Get market shipments for a specific centra"""
     return crud.get_market_shipments_by_centra_id(db=db, centra_id=centra_id, skip=skip, limit=limit)
+
+@router.get("/market_shipments/debug/session", dependencies=[Depends(cookie)], tags=["MarketShipment"])
+def debug_user_session(session_data: SessionData = Depends(verifier)):
+    """Debug endpoint to check current user session"""
+    return {
+        "user_id": session_data.UserID,
+        "username": session_data.Username,
+        "role_id": session_data.RoleID,
+        "email": session_data.Email,
+        "is_centra": session_data.RoleID == 1
+    }
+
+@router.get("/market_shipments/user", response_model=List[MarketShipmentWithCentra], dependencies=[Depends(cookie)], tags=["MarketShipment"])
+def get_market_shipments_by_user_centra(skip: int = 0, limit: int = 10, db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
+    """Get market shipments for current user's centra from session - CENTRA USERS ONLY"""
+    # Debug: Log session data
+    print(f"Session Debug - UserID: {session_data.UserID}, RoleID: {session_data.RoleID}, Username: {session_data.Username}")
+    
+    # Restrict access to centra users only (RoleID == 1)
+    if session_data.RoleID != 1:
+        print(f"Access denied - User {session_data.Username} has RoleID {session_data.RoleID}, expected 1")
+        raise HTTPException(status_code=403, detail=f"Access denied. This endpoint is only available for centra users. Your role: {session_data.RoleID}")
+    
+    # For centra users, UserID is the CentraID
+    user_centra_id = session_data.UserID
+    print(f"Fetching market shipments for centra: {user_centra_id}")
+    return crud.get_market_shipments_by_centra_id(db=db, centra_id=user_centra_id, skip=skip, limit=limit)
 
 @router.get("/market_shipment/get/{market_shipment_id}", response_model=MarketShipment, tags=["MarketShipment"])
 def get_market_shipment(market_shipment_id: int, db: Session = Depends(get_db)):

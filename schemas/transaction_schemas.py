@@ -27,6 +27,16 @@ class MarketShipment(MarketShipmentBase):
     class Config:
         orm_mode = True
 
+class MarketShipmentWithCentra(BaseModel):
+    """MarketShipment response model that includes CentraID from SubTransaction"""
+    MarketShipmentID: int
+    CentraID: str
+    ProductTypeID: int
+    ProductID: int
+    Price: float
+    InitialPrice: float
+    ShipmentStatus: Optional[str] = None
+
 class SubTransactionBase(BaseModel):
     SubTransactionStatus: str
 

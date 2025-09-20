@@ -12,9 +12,6 @@ from fastapi_sessions.frontends.implementations import SessionCookie, CookiePara
 import bcrypt
 import pyotp
 from datetime import datetime, timedelta    
-import smtplib
-from dotenv import load_dotenv
-import os
 from email_service import send_otp_email
 
 router = APIRouter()
@@ -148,26 +145,13 @@ def generate_otp(request: GenerateOTPRequest, db: Session = Depends(get_db)):
     otp_create = OTPCreate(email=email, otp_code=hashed_otp_code, expires_at=datetime.now() + timedelta(minutes=2))
     crud.create_otp(db, otp_create)
 
-    server = smtplib.SMTP('smtp.gmail.com', 587)
-    server.starttls()
-
-    load_dotenv()
-    USER_EMAIL = os.getenv("EMAIL")
-    USER_PASSWORD = os.getenv("PASSWORD")
+    # Send OTP email using new visual design
+    success = send_otp_email(email, otp_code, expiry_minutes=10)
     
-    server.login(USER_EMAIL, USER_PASSWORD)
-
-    body = f"Your OTP is {otp_code}."
-    subject = "OTP verification using python" 
-    message = f'subject:{subject}\n\n{body}'
-
-    server.sendmail(USER_EMAIL, email, message)
-    server.quit()
-
-    # print(f"OTP has been sent to {email}")
-    # print(f"Generated OTP code for {email}: {otp_code}")
-
-    return {"message": "OTP generated and sent to your email"}
+    if success:
+        return {"message": "OTP generated and sent to your email"}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to send OTP email")
 
 # Endpoint to verify OTP
 @router.post("/verify_otp")
