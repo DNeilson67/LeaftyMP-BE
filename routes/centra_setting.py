@@ -63,11 +63,7 @@ def get_centra_setting_detail(user_id: str, item_name:str, db: Session = Depends
     
     # If no setting details exist, return default values instead of error
     if not setting_details:
-        # Return default setting details
-        return [
-            {"id": None, "expiry": float('inf'), "discountRate": 0},
-            {"id": None, "expiry": 3, "discountRate": -1}
-        ]
+        raise HTTPException(status_code=404, detail="Centra setting detail not found")
     
     # Map results to the desired structure
     result = [{"id": detail.SettingDetailID, "expiry": detail.ExpDayLeft, "discountRate": detail.DiscountRate} for detail in setting_details]
