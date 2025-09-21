@@ -233,8 +233,9 @@ class CentraFinance(Base):
 class BlockchainTrx(Base):
     __tablename__ = "trx_history"
     
+    TrxId = Column(Integer, primary_key=True, autoincrement=True)  # Auto-incrementing integer ID
     UserID = Column(String(36), ForeignKey("users.UserID"), nullable=False)
-    TrxId = Column(String(100), primary_key=True)  
+    BlockchainHash = Column(String(100), unique=True, nullable=True)  # Blockchain transaction hash (0x + 64 hex chars)
     CreatedAt = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="trx")

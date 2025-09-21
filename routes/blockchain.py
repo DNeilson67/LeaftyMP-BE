@@ -49,7 +49,8 @@ def create_blockchain_transaction(
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        existing_trx = crud.get_blockchain_trx_by_trx_id(db, trx_data.trx_id)
+        # Check if blockchain hash already exists
+        existing_trx = crud.get_blockchain_trx_by_hash(db, trx_data.trx_id)
         if existing_trx:
             raise HTTPException(status_code=400, detail="Transaction ID already exists")
         
@@ -61,9 +62,9 @@ def create_blockchain_transaction(
                 "message": "Blockchain transaction created successfully",
                 "data": {
                     "user_id": blockchain_trx.UserID,
-                    "trx_id": blockchain_trx.TrxId,
-                    "created_at": blockchain_trx.CreatedAt.isoformat() if blockchain_trx.CreatedAt else None,
-                    "username": user.Username
+                    "trx_id": blockchain_trx.TrxId,  # Auto-incrementing ID
+                    "blockchain_hash": blockchain_trx.BlockchainHash,  # Actual blockchain transaction hash
+                    "created_at": blockchain_trx.CreatedAt.isoformat() if blockchain_trx.CreatedAt else None
                 }
             }
         )

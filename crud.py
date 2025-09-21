@@ -1,5 +1,5 @@
 import bcrypt
-from sqlalchemy import cast, Date, and_, text
+from sqlalchemy import cast, Date, and_, or_, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta    
@@ -1786,12 +1786,18 @@ def delete_centra_finance(db: Session, finance_id: int):
 
 def get_random_items(db: Session, item_type: str, limit: int = 100):
     chosen_item = ''
-    # Fetch data based on item type - only items with "Awaiting" status
+    # Fetch data based on item type - only items with "Awaiting" status, not expired, and not locked
     if item_type.lower() == 'flour':
-        items = db.query(models.Flour).filter(models.Flour.Status == "Awaiting").order_by(func.random()).limit(limit).all()
+        items = db.query(models.Flour).filter(
+            models.Flour.Status == "Awaiting",
+            models.Flour.Expiration > func.now()
+        ).order_by(func.random()).limit(limit).all()
         chosen_item = "Powder"
     elif item_type.lower() == 'dry_leaves':
-        items = db.query(models.DryLeaves).filter(models.DryLeaves.Status == "Awaiting").order_by(func.random()).limit(limit).all()
+        items = db.query(models.DryLeaves).filter(
+            models.DryLeaves.Status == "Awaiting",
+            models.DryLeaves.Expiration > func.now()
+        ).order_by(func.random()).limit(limit).all()
         chosen_item = "Dry Leaves"
     else:
         raise ValueError("Invalid item type. Choose 'flour' or 'dry_leaves'.")
@@ -1885,12 +1891,14 @@ def get_items_by_selected_centra(db: Session, item_type: str, users: List[UUID])
     if item_type.lower() == 'flour':
         items = db.query(models.Flour).filter(
             models.Flour.UserID.in_(user_ids),
-            models.Flour.Status == "Awaiting"
+            models.Flour.Status == "Awaiting",
+            models.Flour.Expiration > func.now()
         ).order_by(func.random()).all()
     elif item_type.lower() == 'dry_leaves':
         items = db.query(models.DryLeaves).filter(
             models.DryLeaves.UserID.in_(user_ids),
-            models.DryLeaves.Status == "Awaiting"
+            models.DryLeaves.Status == "Awaiting",
+            models.DryLeaves.Expiration > func.now()
         ).order_by(func.random()).all()
     else:
         raise ValueError("Invalid item type. Choose 'flour' or 'dry_leaves'.")
@@ -2395,7 +2403,7 @@ def get_trx_id(db: Session, trx: schemas.blockchain_schemas):
 def create_blockchain_trx(db: Session, user_id: str, trx_id: str):
     db_trx = models.BlockchainTrx(
         UserID=user_id,
-        TrxId=trx_id
+        BlockchainHash=trx_id  # Store the blockchain transaction hash
     )
     db.add(db_trx)
     db.commit()
@@ -2405,8 +2413,13 @@ def create_blockchain_trx(db: Session, user_id: str, trx_id: str):
 def get_blockchain_trx_by_user_id(db: Session, user_id: str):
     return db.query(models.BlockchainTrx).filter(models.BlockchainTrx.UserID == user_id).all()
 
-def get_blockchain_trx_by_trx_id(db: Session, trx_id: str):
+def get_blockchain_trx_by_trx_id(db: Session, trx_id: int):
+    """Get blockchain transaction by auto-incrementing TrxId"""
     return db.query(models.BlockchainTrx).filter(models.BlockchainTrx.TrxId == trx_id).first()
+
+def get_blockchain_trx_by_hash(db: Session, blockchain_hash: str):
+    """Get blockchain transaction by blockchain hash"""
+    return db.query(models.BlockchainTrx).filter(models.BlockchainTrx.BlockchainHash == blockchain_hash).first()
 
 def get_all_blockchain_trx(db: Session):
     return db.query(models.BlockchainTrx).all()
@@ -2625,3 +2638,172 @@ def get_product_lock_status(db: Session, product_type_id: int, product_id: int):
 
     except Exception as e:
         raise e
+    
+def search_products_by_query(db: Session, query: str, skip: int = 0, limit: int = 10):
+    search_pattern = f"%{query}%"
+    
+    wetleaves_query = (
+        db.query(
+            models.WetLeaves.WetLeavesID.label("id"),
+            models.WetLeaves.UserID.label("user_id"),
+            models.WetLeaves.Expiration.label("expiration"),
+            models.WetLeaves.Weight.label("weight"),
+            literal_column("'Wet Leaves'").label("product_name"),
+            models.User.Username.label("username"),
+            models.User.UserID.label("centra_id")
+        )
+        .join(models.User, models.WetLeaves.UserID == models.User.UserID)
+        .filter(
+            or_(
+                literal_column("'Wet Leaves'").ilike(search_pattern),
+                models.User.Username.ilike(search_pattern)
+            )
+        )
+    )
+
+    dryleaves_query = (
+        db.query(
+            models.DryLeaves.DryLeavesID.label("id"),
+            models.DryLeaves.UserID.label("user_id"),
+            models.DryLeaves.Expiration.label("expiration"),
+            models.DryLeaves.Processed_Weight.label("weight"),
+            literal_column("'Dry Leaves'").label("product_name"),
+            models.User.Username.label("username"),
+            models.User.UserID.label("centra_id")
+        )
+        .join(models.User, models.DryLeaves.UserID == models.User.UserID)
+        .filter(
+            or_(
+                literal_column("'Dry Leaves'").ilike(search_pattern),
+                models.User.Username.ilike(search_pattern)
+            )
+        )
+    )
+
+    powder_query = (
+        db.query(
+            models.Flour.FlourID.label("id"),
+            models.Flour.UserID.label("user_id"),
+            models.Flour.Expiration.label("expiration"),
+            models.Flour.Flour_Weight.label("weight"),
+            literal_column("'Powder'").label("product_name"),
+            models.User.Username.label("username"),
+            models.User.UserID.label("centra_id")
+        )
+        .join(models.User, models.Flour.UserID == models.User.UserID)
+        .filter(
+            or_(
+                literal_column("'Powder'").ilike(search_pattern),
+                models.User.Username.ilike(search_pattern)
+            )
+        )
+    )
+
+    combined_query = wetleaves_query.union_all(dryleaves_query).union_all(powder_query)
+
+    # Apply offset and limit for pagination
+    paged_query = combined_query.offset(skip).limit(limit)
+
+    results = paged_query.all()
+
+    return results
+
+def get_marketplace_items_by_centra(db: Session, centra_name: str, skip: int = 0, limit: int = 15):
+    """Get marketplace items filtered by specific centra name"""
+    
+    # Queries for individual products - only include available products from specific centra
+    wet = db.query(
+        models.WetLeaves.WetLeavesID.label("id"),
+        models.WetLeaves.UserID.label("user_id"),
+        models.WetLeaves.Expiration.label("expiration"),
+        models.WetLeaves.Weight.label("stock"),
+        models.WetLeaves.Status.label("status"),
+        literal_column("'Wet Leaves'").label("product_name")
+    ).join(models.User, models.WetLeaves.UserID == models.User.UserID
+    ).filter(
+        models.WetLeaves.Status == "Awaiting",
+        models.User.Username == centra_name
+    )
+
+    dry = db.query(
+        models.DryLeaves.DryLeavesID.label("id"),
+        models.DryLeaves.UserID.label("user_id"),
+        models.DryLeaves.Expiration.label("expiration"),
+        models.DryLeaves.Processed_Weight.label("stock"),
+        models.DryLeaves.Status.label("status"),
+        literal_column("'Dry Leaves'").label("product_name")
+    ).join(models.User, models.DryLeaves.UserID == models.User.UserID
+    ).filter(
+        models.DryLeaves.Status == "Awaiting",
+        models.User.Username == centra_name
+    )
+
+    flour = db.query(
+        models.Flour.FlourID.label("id"),
+        models.Flour.UserID.label("user_id"),
+        models.Flour.Expiration.label("expiration"),
+        models.Flour.Flour_Weight.label("stock"),
+        models.Flour.Status.label("status"),
+        literal_column("'Powder'").label("product_name")
+    ).join(models.User, models.Flour.UserID == models.User.UserID
+    ).filter(
+        models.Flour.Status == "Awaiting",
+        models.User.Username == centra_name
+    )
+
+    # Combine queries with UNION ALL
+    union_query = union_all(wet, dry, flour).alias("products")
+
+    # Create an alias for the User table
+    user_alias = aliased(models.User)
+
+    # Create the full select statement with join to get username
+    stmt = select(
+        union_query.c.id,
+        union_query.c.user_id,
+        user_alias.Username.label("username"),
+        union_query.c.expiration,
+        union_query.c.product_name,
+        union_query.c.stock,
+        union_query.c.status
+    ).join(user_alias, union_query.c.user_id == user_alias.UserID
+    ).filter(
+        union_query.c.expiration > func.now(),  # Filter out expired products
+        user_alias.Username == centra_name  # Filter by centra name
+    ).order_by(func.random()).offset(skip).limit(limit)
+
+    # Execute the query
+    rows = db.execute(stmt).fetchall()
+    
+    currentDate = datetime.now()
+    results = []
+
+    for row in rows:
+        source = row.product_name
+        centra_base_settings = get_centra_base_settings_by_user_id_and_items(db, row.user_id, source)
+        discount_conditions = get_centra_setting_detail_by_user_id_and_item(db, row.user_id, source)
+
+        price = centra_base_settings[0].InitialPrice if centra_base_settings else 0
+        expdayleft = (row.expiration - currentDate).days
+
+        def calculate_discounted_price(expiry_left, data, initial_price):
+            applicable = [item for item in data if expiry_left <= item.ExpDayLeft]
+            if not applicable:
+                return initial_price
+            best = min(applicable, key=lambda x: x.ExpDayLeft).DiscountRate
+            return round(initial_price - (initial_price * best / 100))
+
+        final_price = calculate_discounted_price(expdayleft, discount_conditions, price)
+
+        results.append({
+            "id": row.id,
+            "product_name": row.product_name,
+            "stock": row.stock,
+            "centra_name": row.username,
+            "initial_price": price,
+            "price": final_price,
+            "expiry_time": expdayleft,
+            "status": row.status
+        })
+
+    return results

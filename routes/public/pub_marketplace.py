@@ -12,6 +12,21 @@ router = APIRouter()
 def get_marketplace_items(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     return crud.get_marketplace_items(db=db, skip=skip, limit=limit)
 
+@router.get("/marketplace/{centra_name}", response_model=List)
+def get_marketplace_items_by_centra(
+    centra_name: str, 
+    skip: int = 0, 
+    limit: int = 10, 
+    db: Session = Depends(get_db)
+):
+    """Get marketplace items from a specific centra"""
+    items = crud.get_marketplace_items_by_centra(db=db, centra_name=centra_name, skip=skip, limit=limit)
+    
+    if not items:
+        raise HTTPException(status_code=404, detail=f"No products found for centra '{centra_name}'")
+    
+    return items
+
 @router.get("/marketplace/get_product_details")
 def get_marketplace_item(
     product_id: int = Query(...),
@@ -46,7 +61,7 @@ def search_marketplace_products(
 
     return [
         {
-            "id": r.id,
+            "id": r.id, 
             "product_name": r.product_name,
             "weight": r.weight,
             "username": r.username,
