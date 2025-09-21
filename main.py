@@ -16,7 +16,8 @@ app = FastAPI()
 cookie_params = CookieParameters(
     secure=False,  # Set to False for localhost development, True for production HTTPS
     httponly=True,
-    samesite="lax"  # Use "lax" for localhost, "none" for cross-domain HTTPS
+    samesite="lax",  # Use "lax" for localhost, "none" for cross-domain HTTPS
+    max_age=86400  # Session expires in 1 day (24 hours * 60 minutes * 60 seconds)
 )
 
 cookie = SessionCookie(
@@ -38,7 +39,7 @@ app.add_middleware(
         "http://localhost:5004", 
         "https://leafty.csbihub.id", 
         "https://leafty-rest-api.csbihub.id",
-        "https://leafty-mp.vercel.app",
+        "https://leafty-mp.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],

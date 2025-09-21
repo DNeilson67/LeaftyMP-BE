@@ -2639,26 +2639,58 @@ def get_product_lock_status(db: Session, product_type_id: int, product_id: int):
     except Exception as e:
         raise e
     
-def search_products_by_query(db: Session, query: str, skip: int = 0, limit: int = 10):
+def search_products_by_query(db: Session, query: str, skip: int = 0, limit: int = 10, show_all: bool = False):
+    from datetime import datetime
+
     search_pattern = f"%{query}%"
-    
+
+    # Only filter by status/expiration if show_all is False
+    wetleaves_filters = [
+        or_(
+            literal_column("'Wet Leaves'").ilike(search_pattern),
+            models.User.Username.ilike(search_pattern)
+        )
+    ]
+    dryleaves_filters = [
+        or_(
+            literal_column("'Dry Leaves'").ilike(search_pattern),
+            models.User.Username.ilike(search_pattern)
+        )
+    ]
+    powder_filters = [
+        or_(
+            literal_column("'Powder'").ilike(search_pattern),
+            models.User.Username.ilike(search_pattern)
+        )
+    ]
+
+    if not show_all:
+        wetleaves_filters += [
+            models.WetLeaves.Status == "Awaiting",
+            models.WetLeaves.Expiration > func.now()
+        ]
+        dryleaves_filters += [
+            models.DryLeaves.Status == "Awaiting",
+            models.DryLeaves.Expiration > func.now()
+        ]
+        powder_filters += [
+            models.Flour.Status == "Awaiting",
+            models.Flour.Expiration > func.now()
+        ]
+
     wetleaves_query = (
         db.query(
             models.WetLeaves.WetLeavesID.label("id"),
             models.WetLeaves.UserID.label("user_id"),
             models.WetLeaves.Expiration.label("expiration"),
             models.WetLeaves.Weight.label("weight"),
+            models.WetLeaves.Status.label("status"),
             literal_column("'Wet Leaves'").label("product_name"),
             models.User.Username.label("username"),
             models.User.UserID.label("centra_id")
         )
         .join(models.User, models.WetLeaves.UserID == models.User.UserID)
-        .filter(
-            or_(
-                literal_column("'Wet Leaves'").ilike(search_pattern),
-                models.User.Username.ilike(search_pattern)
-            )
-        )
+        .filter(*wetleaves_filters)
     )
 
     dryleaves_query = (
@@ -2667,17 +2699,13 @@ def search_products_by_query(db: Session, query: str, skip: int = 0, limit: int 
             models.DryLeaves.UserID.label("user_id"),
             models.DryLeaves.Expiration.label("expiration"),
             models.DryLeaves.Processed_Weight.label("weight"),
+            models.DryLeaves.Status.label("status"),
             literal_column("'Dry Leaves'").label("product_name"),
             models.User.Username.label("username"),
             models.User.UserID.label("centra_id")
         )
         .join(models.User, models.DryLeaves.UserID == models.User.UserID)
-        .filter(
-            or_(
-                literal_column("'Dry Leaves'").ilike(search_pattern),
-                models.User.Username.ilike(search_pattern)
-            )
-        )
+        .filter(*dryleaves_filters)
     )
 
     powder_query = (
@@ -2686,25 +2714,49 @@ def search_products_by_query(db: Session, query: str, skip: int = 0, limit: int 
             models.Flour.UserID.label("user_id"),
             models.Flour.Expiration.label("expiration"),
             models.Flour.Flour_Weight.label("weight"),
+            models.Flour.Status.label("status"),
             literal_column("'Powder'").label("product_name"),
             models.User.Username.label("username"),
             models.User.UserID.label("centra_id")
         )
         .join(models.User, models.Flour.UserID == models.User.UserID)
-        .filter(
-            or_(
-                literal_column("'Powder'").ilike(search_pattern),
-                models.User.Username.ilike(search_pattern)
-            )
-        )
+        .filter(*powder_filters)
     )
 
     combined_query = wetleaves_query.union_all(dryleaves_query).union_all(powder_query)
-
-    # Apply offset and limit for pagination
     paged_query = combined_query.offset(skip).limit(limit)
+    rows = paged_query.all()
 
-    results = paged_query.all()
+    currentDate = datetime.now()
+    results = []
+
+    for row in rows:
+        source = row.product_name
+        centra_base_settings = get_centra_base_settings_by_user_id_and_items(db, row.user_id, source)
+        discount_conditions = get_centra_setting_detail_by_user_id_and_item(db, row.user_id, source)
+
+        price = centra_base_settings[0].InitialPrice if centra_base_settings else 0
+        expdayleft = (row.expiration - currentDate).days
+
+        def calculate_discounted_price(expiry_left, data, initial_price):
+            applicable = [item for item in data if expiry_left <= item.ExpDayLeft]
+            if not applicable:
+                return initial_price
+            best = min(applicable, key=lambda x: x.ExpDayLeft).DiscountRate
+            return round(initial_price - (initial_price * best / 100))
+
+        final_price = calculate_discounted_price(expdayleft, discount_conditions, price)
+
+        results.append({
+            "id": row.id,
+            "product_name": row.product_name,
+            "stock": row.weight,
+            "centra_name": row.username,
+            "initial_price": price,
+            "price": final_price,
+            "expiry_time": expdayleft,
+            "status": row.status
+        })
 
     return results
 

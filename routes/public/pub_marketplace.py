@@ -52,21 +52,21 @@ def search_marketplace_products(
     query: str = Query(..., min_length=1),
     skip: int = 0,
     limit: int = 10,
+    show_all: bool = False,
     db: Session = Depends(get_db)
 ):
-    results = crud.search_products_by_query(db=db, query=query, skip=skip, limit=limit)
-
+    results = crud.search_products_by_query(db=db, query=query, skip=skip, limit=limit, show_all=show_all)
     if not results:
         raise HTTPException(status_code=404, detail="No matching products or users found")
-
-    return [
-        {
-            "id": r.id, 
-            "product_name": r.product_name,
-            "weight": r.weight,
-            "username": r.username,
-            "centra_id": r.centra_id,
-            "expiration": r.expiration.isoformat() if r.expiration else None,
-        }
-        for r in results
-    ]
+    return results
+    # return [
+    #     {
+    #         "id": r.id, 
+    #         "product_name": r.product_name,
+    #         "weight": r.weight,
+    #         "username": r.username,
+    #         "centra_id": r.centra_id,
+    #         "expiration": r.expiration.isoformat() if r.expiration else None,
+    #     }
+    #     for r in results
+    # ]
