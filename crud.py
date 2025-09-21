@@ -900,6 +900,21 @@ def get_centra_setting_detail_by_user_id(db: Session, user_id: str):
     return db.query(models.CentraSettingDetail).filter(models.CentraSettingDetail.UserID == user_id).all()
 
 def get_centra_setting_detail_by_user_id_and_item(db: Session, user_id: str, item_name: str):
+    # Ensure the product exists first
+    product = db.query(models.Products).filter(models.Products.ProductName == item_name).first()
+    if not product:
+        # Create the product if it doesn't exist
+        product = models.Products(ProductName=item_name)
+        db.add(product)
+        try:
+            db.commit()
+            db.refresh(product)
+            print(f"Created missing product: {item_name}")
+        except Exception as e:
+            db.rollback()
+            print(f"Error creating product {item_name}: {e}")
+            return []
+    
     return db.query(models.CentraSettingDetail).join(models.Products, models.CentraSettingDetail.ProductID == models.Products.ProductID).filter(and_(
                 models.CentraSettingDetail.UserID == user_id,
                 models.Products.ProductName == item_name
@@ -977,6 +992,21 @@ def delete_centra_base_settings(db: Session, settings_id: int):
     return False
 
 def get_centra_base_settings_by_user_id_and_items(db: Session, user_id: str, item_name: str):
+    # Ensure the product exists first
+    product = db.query(models.Products).filter(models.Products.ProductName == item_name).first()
+    if not product:
+        # Create the product if it doesn't exist
+        product = models.Products(ProductName=item_name)
+        db.add(product)
+        try:
+            db.commit()
+            db.refresh(product)
+            print(f"Created missing product: {item_name}")
+        except Exception as e:
+            db.rollback()
+            print(f"Error creating product {item_name}: {e}")
+            return []
+    
     return db.query(models.CentraBaseSettings).join(models.Products, models.CentraBaseSettings.ProductID == models.Products.ProductID).filter(and_(
                 models.CentraBaseSettings.UserID == user_id,
                 models.Products.ProductName == item_name

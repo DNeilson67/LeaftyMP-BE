@@ -5,8 +5,35 @@ from fastapi.responses import JSONResponse
 import crud
 from database import get_db
 from schemas.marketplace_schemas import CentraSettingDetail, CentraSettingDetailCreate, CentraSettingDetailBase, CentraSettingDetailUpdate
+import models
 
 router = APIRouter()
+
+@router.get("/debug/products", tags=["Debug"])
+def get_all_products(db: Session = Depends(get_db)):
+    """Debug endpoint to check what ProductNames exist in the database"""
+    products = db.query(models.Products).all()
+    return [{"ProductID": p.ProductID, "ProductName": p.ProductName} for p in products]
+
+@router.post("/init/products", tags=["Initialization"])
+def initialize_products(db: Session = Depends(get_db)):
+    """Initialize the required product templates"""
+    required_products = ["Wet Leaves", "Dry Leaves", "Powder"]
+    created = []
+    
+    for product_name in required_products:
+        existing_product = db.query(models.Products).filter(models.Products.ProductName == product_name).first()
+        if not existing_product:
+            new_product = models.Products(ProductName=product_name)
+            db.add(new_product)
+            created.append(product_name)
+    
+    try:
+        db.commit()
+        return {"message": f"Products initialized successfully", "created": created}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error creating products: {str(e)}")
 
 @router.post("/centra_setting_detail/post", response_model=CentraSettingDetail)
 def create_centra_setting_detail(centra_setting_detail: CentraSettingDetailCreate, db: Session = Depends(get_db)):
@@ -33,8 +60,14 @@ def get_centra_setting_detail(user_id: str, db: Session = Depends(get_db)):
 @router.get("/centra_setting_detail/get_user/{user_id}/{item_name}", response_model=List[Dict])
 def get_centra_setting_detail(user_id: str, item_name:str, db: Session = Depends(get_db)):
     setting_details = crud.get_centra_setting_detail_by_user_id_and_item(db=db, user_id=user_id, item_name=item_name)
+    
+    # If no setting details exist, return default values instead of error
     if not setting_details:
-        raise HTTPException(status_code=404, detail="Centra setting detail not found")
+        # Return default setting details
+        return [
+            {"id": None, "expiry": float('inf'), "discountRate": 0},
+            {"id": None, "expiry": 3, "discountRate": -1}
+        ]
     
     # Map results to the desired structure
     result = [{"id": detail.SettingDetailID, "expiry": detail.ExpDayLeft, "discountRate": detail.DiscountRate} for detail in setting_details]
@@ -115,8 +148,11 @@ def delete_centra_base_settings(settings_id: int, db: Session = Depends(get_db))
 @router.get("/centra_base_settings/get_user/{user_id}/{item_name}", response_model=List[Dict])
 def get_centra_base_settings_by_user_and_item(user_id: str, item_name: str, db: Session = Depends(get_db)):
     base_settings = crud.get_centra_base_settings_by_user_id_and_items(db=db, user_id=user_id, item_name=item_name)
+    
+    # If no base settings exist, return default values instead of error
     if not base_settings:
-        raise HTTPException(status_code=404, detail="Centra setting detail not found")
+        # Return default base settings
+        return [{"initialPrice": 5000, "sellable": True}]
     
     print(base_settings)
     # Map the results correctly by iterating through the base_settings
