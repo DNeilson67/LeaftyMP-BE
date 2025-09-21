@@ -1,4 +1,4 @@
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from requests import Session
 from fastapi.responses import JSONResponse
@@ -35,8 +35,8 @@ def debug_user_session(session_data: SessionData = Depends(verifier)):
     }
 
 @router.get("/market_shipments/user", response_model=List[MarketShipmentWithCentra], dependencies=[Depends(cookie)], tags=["MarketShipment"])
-def get_market_shipments_by_user_centra(skip: int = 0, limit: int = 10, db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
-    """Get market shipments for current user's centra from session - CENTRA USERS ONLY"""
+def get_market_shipments_by_user_centra(skip: int = 0, limit: int = 10, status: Optional[str] = None, db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
+    """Get market shipments for current user's centra from session with optional status filter - CENTRA USERS ONLY"""
     # Debug: Log session data
     print(f"Session Debug - UserID: {session_data.UserID}, RoleID: {session_data.RoleID}, Username: {session_data.Username}")
     
@@ -47,8 +47,8 @@ def get_market_shipments_by_user_centra(skip: int = 0, limit: int = 10, db: Sess
     
     # For centra users, UserID is the CentraID
     user_centra_id = session_data.UserID
-    print(f"Fetching market shipments for centra: {user_centra_id}")
-    return crud.get_market_shipments_by_centra_id(db=db, centra_id=user_centra_id, skip=skip, limit=limit)
+    print(f"Fetching market shipments for centra: {user_centra_id} with status filter: {status}")
+    return crud.get_market_shipments_by_centra_id(db=db, centra_id=user_centra_id, skip=skip, limit=limit, status=status)
 
 @router.get("/market_shipment/get/{market_shipment_id}", response_model=MarketShipment, tags=["MarketShipment"])
 def get_market_shipment(market_shipment_id: int, db: Session = Depends(get_db)):

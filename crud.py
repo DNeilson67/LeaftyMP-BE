@@ -1453,15 +1453,18 @@ def get_market_shipment_by_id(db: Session, market_shipment_id: int):
         }
     return None
 
-def get_market_shipments_by_centra_id(db: Session, centra_id: str, skip: int = 0, limit: int = 10):
-    results = (
+def get_market_shipments_by_centra_id(db: Session, centra_id: str, skip: int = 0, limit: int = 10, status: str = None):
+    query = (
         db.query(models.MarketShipment, models.SubTransaction.CentraID)
         .join(models.SubTransaction, models.MarketShipment.SubTransactionID == models.SubTransaction.SubTransactionID)
         .filter(models.SubTransaction.CentraID == centra_id)
-        .offset(skip)
-        .limit(limit)
-        .all()
     )
+    
+    # Add status filter if provided
+    if status:
+        query = query.filter(models.MarketShipment.ShipmentStatus == status)
+    
+    results = query.offset(skip).limit(limit).all()
     
     # Convert results to include CentraID in MarketShipment objects
     market_shipments = []
