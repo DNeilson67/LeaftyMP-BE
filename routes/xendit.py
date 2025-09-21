@@ -9,6 +9,7 @@ from datetime import datetime
 import crud
 from database import get_db
 from schemas.xendit_schemas import InvoiceRequest, XenditInvoiceRequestBody, InvoicePaidWebhook
+from schemas.biteship_schemas import ShipmentData, Item, Coordinates
 import models 
 from models import Flour,WetLeaves,DryLeaves
 from dotenv import load_dotenv
@@ -27,6 +28,7 @@ with open("./LeaftyLogo.svg", "rb") as logo_file:
 # Xendit credentials
 XENDIT_API_KEY = os.getenv("XENDIT_API_KEY")
 INVOICE_API_KEY = os.getenv("INVOICE_API_KEY")
+BITESHIP_API_KEY = os.getenv("BITESHIP_API_KEY") # Added Biteship API Key
 INVOICE_API_URL = "https://invoice-generator.com"
 encoded_api_key = base64.b64encode(f"{XENDIT_API_KEY}:".encode()).decode()
 xendit_invoice_url = "https://api.xendit.co/v2/invoices"
@@ -313,90 +315,149 @@ async def download_receipt(transaction_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Receipt generation failed: {str(e)}")
 
 
+#WEBHOOK: Change status to "On Delivery" if paid, create Biteship order, and send receipt
 @router.post("/webhook/invoice-paid", tags=["Xendit Webhooks"])
 async def invoice_paid_webhook(payload: InvoicePaidWebhook, db: Session = Depends(get_db)):
     try:
-        # Log the incoming webhook payload for debugging
-        logging.info(f"Received webhook for external_id: {payload.external_id}, status: {payload.status}")
-        
         if payload.status != "PAID":
-            logging.info(f"Ignored webhook. Status is {payload.status}")
             return {"message": f"Ignored. Status is {payload.status}"}
         
         transaction_id = payload.external_id.split('_')[-1]
-        logging.info(f"Processing payment for transaction_id: {transaction_id}")
 
-        # Get transaction with row-level locking to prevent concurrent modifications
-        transaction = db.query(models.Transaction).filter_by(
-            TransactionID=transaction_id
-        ).with_for_update(nowait=False).first()
-        
+        # Get transaction with full details
+        transaction = db.query(models.Transaction).filter_by(TransactionID=transaction_id).first()
         if not transaction:
-            logging.error(f"Transaction {transaction_id} not found")
             raise HTTPException(status_code=404, detail="Transaction not found")
-        
-        # Check if transaction is already processed (idempotency)
-        if transaction.TransactionStatus == "On Delivery":
-            logging.info(f"Transaction {transaction_id} already processed")
-            return {"message": f"Transaction {transaction_id} already processed"}
         
         # Get customer details
         customer = db.query(models.User).filter_by(UserID=transaction.CustomerID).first()
         if not customer:
-            logging.error(f"Customer {transaction.CustomerID} not found")
             raise HTTPException(status_code=404, detail="Customer not found")
 
         # Update transaction status
         transaction.TransactionStatus = "On Delivery"
-        logging.info(f"Updated transaction {transaction_id} status to 'On Delivery'")
 
-        # Update sub-transactions and market shipments
         for sub_tx in transaction.sub_transactions:
             sub_tx.SubTransactionStatus = "On Delivery"  
-            logging.info(f"Updated sub-transaction {sub_tx.SubTransactionID} status to 'On Delivery'")
-            
             for shipment in sub_tx.market_shipments:
                 shipment.ShipmentStatus = "On Delivery"
-                logging.info(f"Updated market shipment {shipment.MarketShipmentID} status to 'On Delivery'")
 
-                # Update individual product statuses
                 if shipment.ProductTypeID == 1:
                     wetleaf = db.query(WetLeaves).filter_by(WetLeavesID=shipment.ProductID).first()
                     if wetleaf:
                         wetleaf.Status = "On Delivery"
-                        logging.info(f"Updated WetLeaves {shipment.ProductID} status to 'On Delivery'")
 
                 elif shipment.ProductTypeID == 2:
                     dryleaf = db.query(DryLeaves).filter_by(DryLeavesID=shipment.ProductID).first()
                     if dryleaf:
                         dryleaf.Status = "On Delivery"
-                        logging.info(f"Updated DryLeaves {shipment.ProductID} status to 'On Delivery'")
 
                 elif shipment.ProductTypeID == 3:
                     flour = db.query(Flour).filter_by(FlourID=shipment.ProductID).first()
                     if flour:
                         flour.Status = "On Delivery"
-                        logging.info(f"Updated Flour {shipment.ProductID} status to 'On Delivery'")
 
-        # Commit all changes
         db.commit()
-        logging.info(f"Successfully committed all status updates for transaction {transaction_id}")
 
-        # Generate and send receipt
+        # Get full transaction details for receipt and shipping
+        transaction_details = crud.get_transaction_details_by_id(
+            db=db, 
+            transaction_id=transaction_id, 
+            session_data=type('obj', (object,), {'UserID': transaction.CustomerID})()
+        )
+
+        # Create Biteship order(s) for this transaction
         try:
-            # Get full transaction details for receipt
-            transaction_details = crud.get_transaction_details_by_id(
-                db=db, 
-                transaction_id=transaction_id, 
-                session_data=type('obj', (object,), {'UserID': transaction.CustomerID})()
-            )
-            
-            # Generate PDF receipt
+            # One shipment order per centra (sub_transaction)
+            for sub_tx in transaction_details['sub_transactions']:
+                # 1. Get Origin (Centra) Details
+                centra_user = db.query(models.User).filter(models.User.Username == sub_tx['CentraUsername']).first()
+                if not centra_user:
+                    logging.error(f"Could not find centra user for Biteship order: {sub_tx['CentraUsername']}")
+                    continue
+
+                origin_coords = Coordinates(
+                    latitude=getattr(centra_user, 'Latitude', -6.200000),
+                    longitude=getattr(centra_user, 'Longitude', 106.816666)
+                )
+
+                # 2. Get Destination (Customer) Details
+                destination_coords = Coordinates(
+                    latitude=getattr(customer, 'Latitude', -6.914744),
+                    longitude=getattr(customer, 'Longitude', 107.609810)
+                )
+
+                # 3. Prepare Items list for this specific sub-transaction
+                biteship_items = []
+                for shipment_item in sub_tx['market_shipments']:
+                    biteship_items.append(Item(
+                        name=shipment_item['ProductName'],
+                        description=shipment_item.get('ProductDescription', f"High quality {shipment_item['ProductName']}"),
+                        category="fashion",
+                        value=int(shipment_item['Price']),
+                        quantity=1,
+                        height=10,
+                        length=10,
+                        weight=int(shipment_item['Weight'] * 1000),
+                        width=10,
+                    ))
+
+                # 4. Construct the Biteship shipment data payload
+                shipment_data = ShipmentData(
+                    shipper_contact_name="Leafty Marketplace",
+                    shipper_contact_phone="081234567890",
+                    shipper_contact_email="support@leafty.com",
+                    shipper_organization="Leafty",
+
+                    origin_contact_name=centra_user.Username,
+                    # DEBUG FIX: Cast phone number to string
+                    origin_contact_phone=str(getattr(centra_user, 'PhoneNumber', '081111111111')),
+                    origin_address=getattr(centra_user, 'Address', 'Centra Address Not Found in DB'),
+                    origin_note=f"Pick up from {centra_user.Username}",
+                    origin_coordinate=origin_coords,
+
+                    destination_contact_name=customer.Username,
+                    # DEBUG FIX: Cast phone number to string
+                    destination_contact_phone=str(getattr(customer, 'PhoneNumber', '082222222222')),
+                    destination_contact_email=customer.Email,
+                    destination_address=getattr(customer, 'Address', 'Customer Address Not Found in DB'),
+                    destination_note="Please handle with care.",
+                    destination_coordinate=destination_coords,
+
+                    courier_company="jne",
+                    courier_type="reg",
+                    courier_insurance=0,
+                    delivery_type="now",
+                    order_note=f"Leafty Order for transaction {transaction_id}",
+                    items=biteship_items
+                )
+
+                # 5. Call Biteship API
+                biteship_headers = {
+                    "Authorization": BITESHIP_API_KEY,
+                    "Content-Type": "application/json"
+                }
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        "https://api.biteship.com/v1/orders",
+                        headers=biteship_headers,
+                        json=shipment_data.dict()
+                    )
+                    if response.status_code == 200:
+                        biteship_order = response.json()
+                        logging.info(f"Successfully created Biteship order. Order ID: {biteship_order.get('id')}")
+                    else:
+                        logging.error(f"Failed to create Biteship order. Status: {response.status_code}, Response: {response.text}")
+
+        except Exception as e:
+            logging.error(f"Failed during Biteship order creation for tx {transaction_id}: {str(e)}")
+
+        # Generate and send receipt (existing logic)
+        try:
             receipt_pdf = await generate_receipt_pdf(transaction_details, customer, payload)
             
-            # Send email with receipt
             email_service = EmailService()
-            email_subject = f"🧾 Receipt for Order #{transaction_id[:8]} - Leafty"
+            email_subject = f" Your Leafty Order is On Its Way! (Order #{transaction_id[:8]})"
             email_body = create_receipt_email_body(transaction_details, customer.Username)
             
             email_sent = email_service.send_email_with_attachment(
@@ -414,12 +475,10 @@ async def invoice_paid_webhook(payload: InvoicePaidWebhook, db: Session = Depend
                 
         except Exception as email_error:
             logging.error(f"Error sending receipt email: {str(email_error)}")
-            # Don't fail the webhook if email fails
             
-        return {"message": f"Transaction {transaction_id} updated to 'On Delivery' and receipt sent to {customer.Email}"}
+        return {"message": f"Transaction {transaction_id} updated, Biteship order processing initiated, and receipt sent."}
 
     except Exception as e:
-        logging.error(f"Webhook processing failed: {str(e)}")
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
 
@@ -503,4 +562,3 @@ async def generate_receipt_pdf(transaction_details: dict, customer: models.User,
     except Exception as e:
         logging.error(f"Error generating receipt PDF: {str(e)}")
         raise Exception(f"Failed to generate receipt: {str(e)}")
-
