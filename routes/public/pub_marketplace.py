@@ -12,7 +12,7 @@ router = APIRouter()
 def get_marketplace_items(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     return crud.get_marketplace_items(db=db, skip=skip, limit=limit)
 
-@router.get("/marketplace/{centra_name}", response_model=List)
+@router.get("/marketplace/get_by_centra/{centra_name}", response_model=List)
 def get_marketplace_items_by_centra(
     centra_name: str, 
     skip: int = 0, 
