@@ -902,18 +902,9 @@ def get_centra_setting_detail_by_user_id(db: Session, user_id: str):
 def get_centra_setting_detail_by_user_id_and_item(db: Session, user_id: str, item_name: str):
     # Ensure the product exists first
     product = db.query(models.Products).filter(models.Products.ProductName == item_name).first()
+    
     if not product:
-        # Create the product if it doesn't exist
-        product = models.Products(ProductName=item_name)
-        db.add(product)
-        try:
-            db.commit()
-            db.refresh(product)
-            print(f"Created missing product: {item_name}")
-        except Exception as e:
-            db.rollback()
-            print(f"Error creating product {item_name}: {e}")
-            return []
+        raise HTTPException(status_code=404, detail="Product not found")
     
     return db.query(models.CentraSettingDetail).join(models.Products, models.CentraSettingDetail.ProductID == models.Products.ProductID).filter(and_(
                 models.CentraSettingDetail.UserID == user_id,
