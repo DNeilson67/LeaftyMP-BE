@@ -1,6 +1,6 @@
 {
     "engines": {
-        "node": "18.x"
+        "node": "24.x"
     },
     "dependencies": {
         "faker": "^6.6.6"
