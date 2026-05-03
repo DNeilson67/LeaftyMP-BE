@@ -1,4 +1,4 @@
-from typing import Dict, List, Union
+from typing import Dict, List, Union, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from requests import Session
 from fastapi.responses import JSONResponse
@@ -53,9 +53,22 @@ def search_marketplace_products(
     skip: int = 0,
     limit: int = 10,
     show_all: bool = False,
+    product_types: Optional[str] = None,
+    prid: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    results = crud.search_products_by_query(db=db, query=query, skip=skip, limit=limit, show_all=show_all)
+    # Parse product_types if provided (comma-separated string to list)
+    product_types_list = product_types.split(",") if product_types else None
+    
+    results = crud.search_products_by_query(
+        db=db, 
+        query=query, 
+        skip=skip, 
+        limit=limit, 
+        show_all=show_all,
+        product_types=product_types_list,
+        prid=prid
+    )
     if not results:
         raise HTTPException(status_code=404, detail="No matching products or users found")
     return results

@@ -5,6 +5,8 @@ from fastapi.responses import JSONResponse
 import crud
 from database import get_db
 from schemas.leaves_schemas import DryLeaves, DryLeavesCreate, DryLeavesUpdate, DryLeavesStatusUpdate
+from schemas.user_schemas import SessionData
+from routes.auth import verifier, cookie
 
 router = APIRouter()
 
@@ -23,8 +25,15 @@ def get_dry_leaves_id(dry_leaves_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="dry leaves not found")
     return dry_leaves
 
-@router.get("/dryleaves/get_by_user/{user_id}", response_model=List[DryLeaves])
-def get_dry_leaves_by_user(user_id: str, db: Session = Depends(get_db)):
+@router.get("/dryleaves/centra", response_model=List[DryLeaves], dependencies=[Depends(cookie)])
+def get_dry_leaves_for_centra(db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
+    """Get dry leaves for current centra user from session - CENTRA USERS ONLY"""
+    # Restrict access to centra users only (RoleID == 1)
+    if session_data.RoleID != 1:
+        raise HTTPException(status_code=403, detail="Access denied. This endpoint is only available for centra users.")
+    
+    # For centra users, UserID is the CentraID
+    user_id = session_data.UserID
     dry_leaves = crud.get_dry_leaves_by_user_id(db, user_id)
     if not dry_leaves:
         raise HTTPException(status_code=404, detail="Dry leaves not found")

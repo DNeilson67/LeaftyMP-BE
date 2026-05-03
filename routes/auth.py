@@ -1,10 +1,13 @@
 from fastapi import APIRouter, HTTPException, Depends,  Response
 from sqlalchemy.orm import Session
+from sqlalchemy import cast
+from sqlalchemy.dialects.postgresql import UUID as PostgreSQL_UUID
 from BasicVerifier import BasicVerifier
 from fastapi_sessions.backends.implementations import InMemoryBackend
 from schemas.user_schemas import SessionData
 from uuid import UUID, uuid4
 import crud
+import models
 from schemas.misc_schemas import LoginRequest
 import bcrypt
 from database import get_db
@@ -100,6 +103,43 @@ async def create_session(user_id: str, response: Response, db: Session = Depends
 @router.get("/whoami", dependencies=[Depends(cookie)])
 async def whoami(session_data: SessionData = Depends(verifier)):
     return session_data
+
+@router.get('/profile', dependencies=[Depends(cookie)])
+async def get_current_user_profile(db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
+    """
+    Get current authenticated user's profile with location data in a single query
+    """
+    user_id = session_data.UserID
+    
+    # Single query with JOIN to get user and location data together (fixes N+1)
+    user_with_location = db.query(
+        models.User,
+        models.Location
+    ).outerjoin(
+        models.Location,
+        models.Location.user_id == models.User.UserID
+    ).filter(
+        cast(models.User.UserID, PostgreSQL_UUID) == user_id
+    ).first()
+    
+    if not user_with_location or not user_with_location[0]:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    user, location = user_with_location
+    
+    # Build response with user data and location data
+    response_data = {
+        "UserID": str(user.UserID),
+        "Username": user.Username,
+        "Email": user.Email,
+        "RoleID": user.RoleID,
+        "PhoneNumber": user.PhoneNumber,
+        "Latitude": location.latitude if location else None,
+        "Longitude": location.longitude if location else None,
+        "Address": location.location_address if location else None,
+    }
+    
+    return response_data
     
 @router.get('/get_location_user', dependencies=[Depends(cookie)])
 async def get_location_user(db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):

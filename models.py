@@ -156,6 +156,12 @@ class Transaction(Base):
     TransactionID = Column(String, primary_key=True)
     CustomerID = Column(String(36), ForeignKey('users.UserID'))
     TransactionStatus = Column(String, default="Transaction Pending")
+    
+    # Shipping Address Fields
+    ShippingLatitude = Column(Float, nullable=True)
+    ShippingLongitude = Column(Float, nullable=True)
+    ShippingAddress = Column(String(200), nullable=True)
+    
     CreatedAt = Column(DateTime(timezone=True), server_default=func.now())
     UpdatedAt = Column(DateTime(timezone=True), server_default=func.now())
     ExpirationAt = Column(DateTime(timezone=True), default=lambda: datetime.utcnow() + timedelta(hours=3))

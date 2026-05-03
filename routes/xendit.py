@@ -16,13 +16,14 @@ from dotenv import load_dotenv
 import os
 import logging
 from email_service import EmailService, create_receipt_email_body
+from routes.auth import cookie, verifier  # Import cookie and verifier for authentication
 
 router = APIRouter()
 
 load_dotenv()
 
-# Load and encode logo
-with open("./LeaftyLogo.svg", "rb") as logo_file:
+# Load and encode logo (use PNG for better compatibility)
+with open("./LeaftyLogo.png", "rb") as logo_file:
     encoded_logo = base64.b64encode(logo_file.read()).decode('utf-8')
 
 # Xendit credentials
@@ -198,6 +199,54 @@ async def generate_invoice_from_webhook(payload: XenditInvoiceRequestBody):
                 raise HTTPException(status_code=response.status_code, detail="Failed to create invoice.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/invoice/generate/{transaction_id}", tags=["Invoice"], dependencies=[Depends(cookie)])
+async def generate_invoice_by_transaction(transaction_id: str, session_data=Depends(verifier), db: Session = Depends(get_db)):
+    """Generate and download invoice PDF for a specific transaction - Optimized to avoid N+1 queries"""
+    try:
+        # Optimize: Fetch transaction with customer in a single query using JOIN
+        transaction_with_customer = (
+            db.query(models.Transaction, models.User)
+            .join(models.User, models.Transaction.CustomerID == models.User.UserID)
+            .filter(models.Transaction.TransactionID == transaction_id)
+            .filter(models.Transaction.CustomerID == session_data.UserID)  # Security: ensure user owns this transaction
+            .first()
+        )
+        
+        if not transaction_with_customer:
+            raise HTTPException(status_code=404, detail="Transaction not found or access denied")
+        
+        transaction, customer = transaction_with_customer
+        
+        # Check if transaction is paid
+        if transaction.TransactionStatus != "On Delivery":
+            raise HTTPException(status_code=400, detail="Invoice can only be generated for paid transactions")
+        
+        # Get detailed transaction data using crud function
+        transaction_details = crud.get_transaction_details_by_id(
+            db=db, 
+            transaction_id=transaction_id, 
+            session_data=session_data
+        )
+        
+        if not transaction_details:
+            raise HTTPException(status_code=404, detail="Transaction details not found")
+        
+        # Use the same shared function as webhook to ensure consistency
+        receipt_pdf = await generate_receipt_pdf(transaction_details, customer, payment_payload=None)
+        
+        return Response(
+            content=receipt_pdf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=invoice_{transaction_id}.pdf"}
+        )
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logging.error(f"Error generating invoice: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error generating invoice: {str(e)}")
 
 
 @router.get("/payout_channels/get")
@@ -483,8 +532,14 @@ async def invoice_paid_webhook(payload: InvoicePaidWebhook, db: Session = Depend
         raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
 
 
-async def generate_receipt_pdf(transaction_details: dict, customer: models.User, payment_payload: InvoicePaidWebhook) -> bytes:
-    """Generate a beautiful PDF receipt using the existing invoice generator"""
+async def generate_receipt_pdf(transaction_details: dict, customer: models.User, payment_payload: InvoicePaidWebhook = None) -> bytes:
+    """Generate a beautiful PDF receipt using the existing invoice generator
+    
+    Args:
+        transaction_details: Dictionary containing transaction data
+        customer: User model instance
+        payment_payload: Optional payment webhook payload (for webhook-generated receipts)
+    """
     
     # Validate inputs
     if not customer:
@@ -494,53 +549,66 @@ async def generate_receipt_pdf(transaction_details: dict, customer: models.User,
     
     # Calculate totals
     subtotal = 0
+    total_savings = 0
     items_list = []
     
     for sub_tx in transaction_details['sub_transactions']:
         for shipment in sub_tx['market_shipments']:
-            item_total = shipment['Price'] * shipment['Weight']
+            # Calculate subtotal based on InitialPrice (before discount)
+            initial_price = shipment.get('InitialPrice', shipment['Price'])
+            item_total = initial_price * shipment['Weight']
             subtotal += item_total
+            
+            # Calculate discount savings
+            if initial_price != shipment['Price']:
+                discount_amount = (initial_price - shipment['Price']) * shipment['Weight']
+                total_savings += discount_amount
             
             items_list.append({
                 "name": f"{shipment['ProductName']} (from {sub_tx['CentraUsername']})",
-                "quantity": shipment['Weight'],
-                "unit_cost": shipment['Price']
+                "quantity": shipment['Weight'],  # Weight in Kg
+                "unit_cost": shipment['Price']   # Actual price per Kg (after discount)
             })
     
-    # Admin fee calculation
-    admin_fee = subtotal * 0.05  # 5% admin fee
-    total_amount = subtotal + admin_fee
+    # Fixed fees (consistent with frontend TransactionDetails.jsx)
+    admin_fee = 5000
+    shipping_fee = 50000
+    total_amount = subtotal + admin_fee + shipping_fee - total_savings
     
     # Prepare receipt data with proper null handling
     paid_date = ""
-    payment_method = "Unknown"
+    payment_method = "Xendit Payment"
     
-    if hasattr(payment_payload, 'paid_at') and payment_payload.paid_at:
-        try:
-            paid_date = pd.to_datetime(payment_payload.paid_at).strftime('%d/%m/%Y - %H:%M:%S')
-        except Exception as e:
-            logging.warning(f"Failed to parse paid_at date: {e}")
-            paid_date = "Unknown"
+    if payment_payload:
+        if hasattr(payment_payload, 'paid_at') and payment_payload.paid_at:
+            try:
+                paid_date = pd.to_datetime(payment_payload.paid_at).strftime('%d/%m/%Y - %H:%M:%S')
+            except Exception as e:
+                logging.warning(f"Failed to parse paid_at date: {e}")
+                paid_date = "Unknown"
+        
+        if hasattr(payment_payload, 'payment_method') and payment_payload.payment_method:
+            payment_method = str(payment_payload.payment_method)
     
-    if hasattr(payment_payload, 'payment_method') and payment_payload.payment_method:
-        payment_method = str(payment_payload.payment_method)
+    # Get shipping address
+    shipping_address = transaction_details.get('ShippingAddress', 'N/A')
     
     receipt_payload = {
-        "logo": encoded_logo,
-        "from": "Leafty Marketplace\nJl. Kebon Jeruk No. 123\nJakarta, Indonesia\nPhone: +62-21-1234-5678\nEmail: support@leafty.com",
-        "to": f"{customer.Username or 'N/A'}\n{customer.Email or 'N/A'}\nCustomer ID: {customer.UserID}",
-        "number": f"RCP-{transaction_details['TransactionID'][:8]}",
+        "logo": f"data:image/png;base64,{encoded_logo}",
+        "from": "Leafty Marketplace\nTea Powder Supplier\nIndonesia\nEmail: support@leafty.com",
+        "to": f"{customer.Username or 'N/A'}\n{customer.Email or 'N/A'}\nShipping Address: {shipping_address}",
+        "number": f"INV-{transaction_details['TransactionID'][:8]}",
         "currency": "IDR",
-        "date": pd.to_datetime(transaction_details['CreatedAt']).strftime('%d/%m/%Y - %H:%M:%S'),
-        "due_date": paid_date,
-        "payment_terms": "Paid via Xendit",
+        "date": pd.to_datetime(transaction_details['CreatedAt']).strftime('%Y-%m-%d'),
+        "due_date": paid_date if paid_date else None,
+        "payment_terms": f"Paid via {payment_method}",
         "items": items_list,
         "tax": 0,
-        "discounts": 0,
-        "shipping": admin_fee,  # Using shipping field for admin fee
+        "discounts": total_savings,  # Show actual discount amount
+        "shipping": shipping_fee + admin_fee,  # Combined shipping and admin fee
         "amount_paid": total_amount,
-        "notes": f"Payment Method: {payment_method}\nTransaction Status: On Delivery\nThank you for choosing Leafty!",
-        "terms": "This receipt serves as proof of payment. Keep this for your records.\nFor support, contact us at support@leafty.com"
+        "notes": f"Transaction ID: {transaction_details['TransactionID']}\nShipping Fee: Rp {shipping_fee:,}\nAdmin Fee: Rp {admin_fee:,}\nDiscount Savings: Rp {total_savings:,}\nStatus: On Delivery",
+        "terms": "Thank you for your purchase!\nThis invoice serves as proof of payment.\nFor support, contact us at support@leafty.com"
     }
 
     # Remove keys with None values

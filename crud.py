@@ -263,9 +263,9 @@ def sum_weight_wet_leaves_by_user_today(db: Session, user_id: str):
     return result or 0
 
 def sum_total_wet_leaves(db: Session):
-    wet_leaves_entries = db.query(models.WetLeaves).all()
-    sum_wet_leaves = int(sum(entry.Weight for entry in wet_leaves_entries))
-    return sum_wet_leaves
+    # Optimized: Use database aggregation instead of fetching all records
+    total = db.query(func.sum(models.WetLeaves.Weight)).scalar()
+    return int(total or 0)
 
 
 def sum_get_wet_leaves_by_user_id(db: Session, user_id: str):
@@ -522,10 +522,10 @@ def create_shipment(db: Session, shipment: schemas.ShipmentCreate):
     db.commit()
     db.refresh(db_shipment)
 
-    for flour_id in shipment.FlourIDs:
-        flour = db.query(models.Flour).filter(models.Flour.FlourID == flour_id).first()
-        if flour:
-            db_shipment.flours.append(flour)
+    # Optimized: Fetch all flours in ONE query instead of looping (N+1 fix)
+    if shipment.FlourIDs:
+        flours = db.query(models.Flour).filter(models.Flour.FlourID.in_(shipment.FlourIDs)).all()
+        db_shipment.flours = flours
     db.commit()
     db.refresh(db_shipment)
 
@@ -548,7 +548,8 @@ def create_shipment(db: Session, shipment: schemas.ShipmentCreate):
     return shipment_data
 
 def get_shipment(db: Session, limit: int = 100):
-    shipments = db.query(models.Shipment).limit(limit).all()
+    # Optimized: Use selectinload to eagerly load flour associations
+    shipments = db.query(models.Shipment).options(selectinload(models.Shipment.flours)).limit(limit).all()
     shipment_data = []
     for shipment in shipments:
         shipment_dict = {
@@ -569,13 +570,22 @@ def get_shipment(db: Session, limit: int = 100):
     return shipment_data
 
 def get_shipment_by_id(db: Session, shipment_id: int):
-    shipment = db.query(models.Shipment).filter(models.Shipment.ShipmentID == shipment_id).first()
+    # Optimized: Use joinedload to eagerly load related data in ONE query
+    shipment = (
+        db.query(models.Shipment)
+        .options(
+            selectinload(models.Shipment.flours),
+            joinedload(models.Shipment.courier),
+            joinedload(models.Shipment.user)
+        )
+        .filter(models.Shipment.ShipmentID == shipment_id)
+        .first()
+    )
+    
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
     
     flour_weight_sum = sum(flour.Flour_Weight for flour in shipment.flours)
-    courier = db.query(models.Courier).filter(models.Courier.CourierID == shipment.CourierID).first()
-    user = db.query(models.User).filter(models.User.UserID == shipment.UserID).first()
     
     return {
         "ShipmentID": shipment.ShipmentID,
@@ -591,15 +601,21 @@ def get_shipment_by_id(db: Session, shipment_id: int):
         "Harbor_Reception_File": shipment.Harbor_Reception_File,
         "Centra_Reception_File": shipment.Centra_Reception_File,
         "FlourWeightSum": flour_weight_sum,
-        "CourierName": courier.CourierName if courier else None,
-        "UserName": user.Username if user else None
+        "CourierName": shipment.courier.CourierName if shipment.courier else None,
+        "UserName": shipment.user.Username if shipment.user else None
     }
 
 def get_all_shipment_ids(db: Session):
     return db.query(models.Shipment).all()
 
 def get_shipment_by_user_id(db: Session, user_id: str):
-    shipments = db.query(models.Shipment).filter(models.Shipment.UserID == user_id).all()
+    # Optimized: Use selectinload to eagerly load flour associations
+    shipments = (
+        db.query(models.Shipment)
+        .options(selectinload(models.Shipment.flours))
+        .filter(models.Shipment.UserID == user_id)
+        .all()
+    )
     shipment_data = []
     for shipment in shipments:
         shipment_dict = {
@@ -661,11 +677,11 @@ def update_shipment(db: Session, shipment_id: int, shipment_update: schemas.Ship
     if shipment_update.CourierID is not None:
         db_shipment.CourierID = shipment_update.CourierID
     if shipment_update.FlourIDs is not None:
+        # Optimized: Fetch all flours in ONE query instead of looping
         db_shipment.flours = []
-        for flour_id in shipment_update.FlourIDs:
-            flour = db.query(models.Flour).filter(models.Flour.FlourID == flour_id).first()
-            if flour:
-                db_shipment.flours.append(flour)
+        if shipment_update.FlourIDs:  # Only query if there are IDs
+            flours = db.query(models.Flour).filter(models.Flour.FlourID.in_(shipment_update.FlourIDs)).all()
+            db_shipment.flours = flours
     if shipment_update.ShipmentQuantity is not None:
         db_shipment.ShipmentQuantity = shipment_update.ShipmentQuantity
     if shipment_update.Check_in_Quantity is not None:
@@ -682,7 +698,13 @@ def update_shipment(db: Session, shipment_id: int, shipment_update: schemas.Ship
     return db_shipment
 
 def update_shipment_date(db: Session, shipment_id: int, shipment_date_update: schemas.ShipmentDateUpdate):
-    db_shipment = db.query(models.Shipment).filter(models.Shipment.ShipmentID == shipment_id).first()
+    # Optimized: Eager load flours to avoid N+1
+    db_shipment = (
+        db.query(models.Shipment)
+        .options(selectinload(models.Shipment.flours))
+        .filter(models.Shipment.ShipmentID == shipment_id)
+        .first()
+    )
     if not db_shipment:
         return None
     db_shipment.ShipmentDate = shipment_date_update.ShipmentDate
@@ -701,7 +723,13 @@ def update_shipment_date(db: Session, shipment_id: int, shipment_date_update: sc
     return shipment_data
 
 def update_shipment_check_in(db: Session, shipment_id: int, check_in_update: schemas.ShipmentCheckInUpdate):
-    db_shipment = db.query(models.Shipment).filter(models.Shipment.ShipmentID == shipment_id).first()
+    # Optimized: Eager load flours to avoid N+1
+    db_shipment = (
+        db.query(models.Shipment)
+        .options(selectinload(models.Shipment.flours))
+        .filter(models.Shipment.ShipmentID == shipment_id)
+        .first()
+    )
     if not db_shipment:
         return None
     db_shipment.Check_in_Date = check_in_update.Check_in_Date  # This will set to None if provided
@@ -724,7 +752,13 @@ def update_shipment_check_in(db: Session, shipment_id: int, check_in_update: sch
     return shipment_data
 
 def update_shipment_rescalled_weight_and_date(db: Session, shipment_id: int, update_data: schemas.ShipmentRescalledWeightUpdate):
-    db_shipment = db.query(models.Shipment).filter(models.Shipment.ShipmentID == shipment_id).first()
+    # Optimized: Eager load flours to avoid N+1
+    db_shipment = (
+        db.query(models.Shipment)
+        .options(selectinload(models.Shipment.flours))
+        .filter(models.Shipment.ShipmentID == shipment_id)
+        .first()
+    )
     if not db_shipment:
         return None
     db_shipment.Rescalled_Weight = update_data.Rescalled_Weight  # This will set to None if provided
@@ -747,7 +781,13 @@ def update_shipment_rescalled_weight_and_date(db: Session, shipment_id: int, upd
     
 
 def update_shipment_harbor_reception(db: Session, shipment_id: int, update_data: schemas.ShipmentHarborReceptionUpdate):
-    db_shipment = db.query(models.Shipment).filter(models.Shipment.ShipmentID == shipment_id).first()
+    # Optimized: Eager load flours to avoid N+1
+    db_shipment = (
+        db.query(models.Shipment)
+        .options(selectinload(models.Shipment.flours))
+        .filter(models.Shipment.ShipmentID == shipment_id)
+        .first()
+    )
     if not db_shipment:
         return None
     db_shipment.Harbor_Reception_File = update_data.Harbor_Reception_File
@@ -771,7 +811,13 @@ def update_shipment_harbor_reception(db: Session, shipment_id: int, update_data:
     return shipment_data
 
 def update_shipment_centra_reception(db: Session, shipment_id: int, update_data: schemas.ShipmentCentraReceptionUpdate):
-    db_shipment = db.query(models.Shipment).filter(models.Shipment.ShipmentID == shipment_id).first()
+    # Optimized: Eager load flours to avoid N+1
+    db_shipment = (
+        db.query(models.Shipment)
+        .options(selectinload(models.Shipment.flours))
+        .filter(models.Shipment.ShipmentID == shipment_id)
+        .first()
+    )
     if not db_shipment:
         return None
     db_shipment.Centra_Reception_File = update_data.Centra_Reception_File
@@ -902,7 +948,6 @@ def get_centra_setting_detail_by_user_id(db: Session, user_id: str):
 def get_centra_setting_detail_by_user_id_and_item(db: Session, user_id: str, item_name: str):
     # Ensure the product exists first
     product = db.query(models.Products).filter(models.Products.ProductName == item_name).first()
-    
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     
@@ -1151,10 +1196,28 @@ def delete_subtransaction(db: Session, subtransaction_id: int):
 
 # --- Create Transaction ---
 def create_transaction(db: Session, transaction: schemas.TransactionCreate):
+    # Get user's default location if shipping address not provided
+    shipping_lat = transaction.ShippingLatitude
+    shipping_lng = transaction.ShippingLongitude
+    shipping_addr = transaction.ShippingAddress
+    
+    if shipping_lat is None or shipping_lng is None or shipping_addr is None:
+        user_location = db.query(models.Location).filter(
+            models.Location.user_id == str(transaction.CustomerID)
+        ).first()
+        
+        if user_location:
+            shipping_lat = shipping_lat or user_location.latitude
+            shipping_lng = shipping_lng or user_location.longitude
+            shipping_addr = shipping_addr or user_location.location_address
+    
     db_transaction = models.Transaction(
         TransactionID=str(uuid.uuid4()),
         CustomerID=str(transaction.CustomerID),
-        TransactionStatus=transaction.status or "pending"
+        TransactionStatus=transaction.status or "pending",
+        ShippingLatitude=shipping_lat,
+        ShippingLongitude=shipping_lng,
+        ShippingAddress=shipping_addr
     )
     db.add(db_transaction)
     db.commit()
@@ -1213,12 +1276,24 @@ def create_single_transaction_by_customer(db: Session, market_shipment: schemas.
         if locked_product.UserID != centra_id_str:
             raise HTTPException(status_code=403, detail="Product does not belong to the specified centra")
 
-        # Step 1: Create Transaction with default status
+        # Get user's default location for shipping address
+        user_location = db.query(models.Location).filter(
+            models.Location.user_id == customer_id_str
+        ).first()
+        
+        shipping_lat = user_location.latitude if user_location else None
+        shipping_lng = user_location.longitude if user_location else None
+        shipping_addr = user_location.location_address if user_location else None
+
+        # Step 1: Create Transaction with default status and shipping address
         transaction_id = str(uuid.uuid4())
         db_transaction = models.Transaction(
             TransactionID=transaction_id,
             CustomerID = customer_id_str,
-            TransactionStatus="Transaction Pending"  # Default status
+            TransactionStatus="Transaction Pending",  # Default status
+            ShippingLatitude=shipping_lat,
+            ShippingLongitude=shipping_lng,
+            ShippingAddress=shipping_addr
         )
         db.add(db_transaction)
         db.flush()  # Use flush instead of commit to keep transaction open
@@ -1277,12 +1352,24 @@ def create_bulk_transaction_by_customer(db: Session, bulk_transaction: schemas.B
     failed_items = []
     successful_items = []
     
-    # Create the main transaction first with default status
+    # Get user's default location for shipping address
+    user_location = db.query(models.Location).filter(
+        models.Location.user_id == customer_id_str
+    ).first()
+    
+    shipping_lat = user_location.latitude if user_location else None
+    shipping_lng = user_location.longitude if user_location else None
+    shipping_addr = user_location.location_address if user_location else None
+    
+    # Create the main transaction first with default status and shipping address
     transaction_id = str(uuid.uuid4())
     db_transaction = models.Transaction(
         TransactionID=transaction_id,
         CustomerID=customer_id_str,
-        TransactionStatus="Transaction Pending"  # Default status
+        TransactionStatus="Transaction Pending",  # Default status
+        ShippingLatitude=shipping_lat,
+        ShippingLongitude=shipping_lng,
+        ShippingAddress=shipping_addr
     )
     
     try:
@@ -1551,13 +1638,143 @@ def update_market_shipment_status(db: Session, market_shipment_id: int, status: 
 def get_transactions(db: Session, skip: int = 0, limit: int = 10):
     return db.query(models.Transaction).offset(skip).limit(limit).all()
 
-def get_transactions_by_customer(db: Session, skip: int = 0, limit: int = 10, session_data: schemas.SessionData = None):
+def get_transactions_by_customer(db: Session, skip: int = 0, limit: int = 10, session_data: schemas.SessionData = None, search: str = None, product_type: str = None, transaction_status: str = None, transaction_type: str = None):
     CustomerID = str(session_data.UserID)
 
-    # First, get all transactions for this customer
+    # Build base query with filters
+    base_query = db.query(models.Transaction).filter(models.Transaction.CustomerID == CustomerID)
+    
+    # Apply transaction status filter if provided
+    if transaction_status:
+        base_query = base_query.filter(models.Transaction.TransactionStatus.ilike(f"%{transaction_status}%"))
+    
+    # If search, product_type, or transaction_type filters are provided, we need to join with related tables
+    if search or product_type or transaction_type:
+        # Create a subquery to find transaction IDs that match the filters
+        matching_transaction_ids_query = (
+            db.query(models.Transaction.TransactionID.distinct())
+            .join(models.SubTransaction, models.Transaction.TransactionID == models.SubTransaction.TransactionID)
+            .join(models.MarketShipment, models.SubTransaction.SubTransactionID == models.MarketShipment.SubTransactionID)
+            .join(models.Products, models.MarketShipment.ProductTypeID == models.Products.ProductID)
+            .join(models.User, models.SubTransaction.CentraID == models.User.UserID)
+            .filter(models.Transaction.CustomerID == CustomerID)
+        )
+        
+        # Apply search filter (Transaction ID or Centra Username)
+        if search:
+            matching_transaction_ids_query = matching_transaction_ids_query.filter(
+                or_(
+                    models.Transaction.TransactionID.ilike(f"%{search}%"),
+                    models.User.Username.ilike(f"%{search}%")
+                )
+            )
+        
+        # Apply product type filter
+        if product_type:
+            matching_transaction_ids_query = matching_transaction_ids_query.filter(
+                models.Products.ProductName.ilike(f"%{product_type}%")
+            )
+        
+        # Apply transaction status filter
+        if transaction_status:
+            matching_transaction_ids_query = matching_transaction_ids_query.filter(
+                models.Transaction.TransactionStatus.ilike(f"%{transaction_status}%")
+            )
+        
+        # Get the matching transaction IDs
+        matching_transaction_ids = [row[0] for row in matching_transaction_ids_query.all()]
+        
+        # ✅ OPTIMIZED: Apply transaction_type filter (Single/Bulk) using subquery instead of loop
+        if transaction_type and transaction_type.lower() != 'all':
+            # Count centras per transaction in ONE query
+            centra_counts_query = (
+                db.query(
+                    models.SubTransaction.TransactionID,
+                    func.count(func.distinct(models.SubTransaction.CentraID)).label('centra_count')
+                )
+                .filter(models.SubTransaction.TransactionID.in_(matching_transaction_ids))
+                .group_by(models.SubTransaction.TransactionID)
+                .subquery()
+            )
+            
+            # Filter based on transaction type
+            if transaction_type.lower() == 'single':
+                # Get transaction IDs with exactly 1 centra
+                filtered_ids_query = (
+                    db.query(centra_counts_query.c.TransactionID)
+                    .filter(centra_counts_query.c.centra_count == 1)
+                )
+            elif transaction_type.lower() == 'bulk':
+                # Get transaction IDs with more than 1 centra
+                filtered_ids_query = (
+                    db.query(centra_counts_query.c.TransactionID)
+                    .filter(centra_counts_query.c.centra_count > 1)
+                )
+            
+            matching_transaction_ids = [row[0] for row in filtered_ids_query.all()]
+        
+        if not matching_transaction_ids:
+            return {
+                "transactions": [],
+                "total": 0,
+                "skip": skip,
+                "limit": limit
+            }
+        
+        # Filter base query by matching transaction IDs
+        base_query = base_query.filter(models.Transaction.TransactionID.in_(matching_transaction_ids))
+    elif transaction_type and transaction_type.lower() != 'all':
+        # ✅ OPTIMIZED: Handle transaction_type filter when no other filters are applied
+        # Get all transaction IDs for this customer first
+        all_transaction_ids = [tx.TransactionID for tx in base_query.all()]
+        
+        if all_transaction_ids:
+            # Count centras per transaction in ONE query
+            centra_counts_query = (
+                db.query(
+                    models.SubTransaction.TransactionID,
+                    func.count(func.distinct(models.SubTransaction.CentraID)).label('centra_count')
+                )
+                .filter(models.SubTransaction.TransactionID.in_(all_transaction_ids))
+                .group_by(models.SubTransaction.TransactionID)
+                .subquery()
+            )
+            
+            # Filter based on transaction type
+            if transaction_type.lower() == 'single':
+                # Get transaction IDs with exactly 1 centra
+                filtered_ids_query = (
+                    db.query(centra_counts_query.c.TransactionID)
+                    .filter(centra_counts_query.c.centra_count == 1)
+                )
+            elif transaction_type.lower() == 'bulk':
+                # Get transaction IDs with more than 1 centra
+                filtered_ids_query = (
+                    db.query(centra_counts_query.c.TransactionID)
+                    .filter(centra_counts_query.c.centra_count > 1)
+                )
+            
+            filtered_transaction_ids = [row[0] for row in filtered_ids_query.all()]
+        else:
+            filtered_transaction_ids = []
+        
+        if not filtered_transaction_ids:
+            return {
+                "transactions": [],
+                "total": 0,
+                "skip": skip,
+                "limit": limit
+            }
+        
+        # Filter base query by matching transaction IDs
+        base_query = base_query.filter(models.Transaction.TransactionID.in_(filtered_transaction_ids))
+    
+    # Get total count BEFORE pagination
+    total_count = base_query.count()
+    
+    # Apply pagination and ordering
     main_transactions = (
-        db.query(models.Transaction)
-        .filter(models.Transaction.CustomerID == CustomerID)
+        base_query
         .order_by(models.Transaction.CreatedAt.desc())
         .limit(limit)
         .offset(skip)
@@ -1565,85 +1782,130 @@ def get_transactions_by_customer(db: Session, skip: int = 0, limit: int = 10, se
     )
     
     if not main_transactions:
-        return []
+        return {
+            "transactions": [],
+            "total": total_count,
+            "skip": skip,
+            "limit": limit
+        }
 
-    result = []
-    
-    for main_transaction in main_transactions:
-        # Get all sub-transactions and their related data for this transaction
-        sub_transactions_data = (
-            db.query(
-                models.SubTransaction.SubTransactionID,
-                models.SubTransaction.SubTransactionStatus,
-                models.SubTransaction.CentraID,
-                models.User.Username.label("CentraUsername"),
-                models.MarketShipment.ProductID,
-                models.MarketShipment.InitialPrice,
-                models.MarketShipment.Price,
-                models.MarketShipment.ShipmentStatus,
-                models.Products.ProductName
-            )
-            .join(models.MarketShipment, models.SubTransaction.SubTransactionID == models.MarketShipment.SubTransactionID)
-            .join(models.Products, models.MarketShipment.ProductTypeID == models.Products.ProductID)
-            .join(models.User, models.SubTransaction.CentraID == models.User.UserID)
-            .filter(models.SubTransaction.TransactionID == main_transaction.TransactionID)
-            .all()
+    # Collect all transaction IDs to fetch related data in bulk
+    transaction_ids = [tx.TransactionID for tx in main_transactions]
+
+    # Get all sub-transactions with market shipments and product info in ONE query using LEFT OUTER JOIN
+    sub_transactions_data = (
+        db.query(
+            models.SubTransaction.SubTransactionID,
+            models.SubTransaction.TransactionID,
+            models.SubTransaction.SubTransactionStatus,
+            models.SubTransaction.CentraID,
+            models.User.Username.label("CentraUsername"),
+            models.MarketShipment.ProductID,
+            models.MarketShipment.ProductTypeID,
+            models.MarketShipment.InitialPrice,
+            models.MarketShipment.Price,
+            models.MarketShipment.ShipmentStatus,
+            models.Products.ProductName,
+            # LEFT JOIN to get weights from all product tables at once
+            models.WetLeaves.Weight.label("WetLeavesWeight"),
+            models.DryLeaves.Processed_Weight.label("DryLeavesWeight"),
+            models.Flour.Flour_Weight.label("FlourWeight")
         )
+        .join(models.MarketShipment, models.SubTransaction.SubTransactionID == models.MarketShipment.SubTransactionID)
+        .join(models.Products, models.MarketShipment.ProductTypeID == models.Products.ProductID)
+        .join(models.User, models.SubTransaction.CentraID == models.User.UserID)
+        # LEFT OUTER JOIN with product tables to get weights in a single query
+        .outerjoin(models.WetLeaves, and_(
+            models.MarketShipment.ProductTypeID == 1,
+            models.MarketShipment.ProductID == models.WetLeaves.WetLeavesID
+        ))
+        .outerjoin(models.DryLeaves, and_(
+            models.MarketShipment.ProductTypeID == 2,
+            models.MarketShipment.ProductID == models.DryLeaves.DryLeavesID
+        ))
+        .outerjoin(models.Flour, and_(
+            models.MarketShipment.ProductTypeID == 3,
+            models.MarketShipment.ProductID == models.Flour.FlourID
+        ))
+        .filter(models.SubTransaction.TransactionID.in_(transaction_ids))
+        .all()
+    )
 
-        # Group the data by sub-transaction
-        sub_transactions_dict = {}
+    # Group data by transaction and sub-transaction
+    transactions_dict = {}
+    
+    for row in sub_transactions_data:
+        tx_id = row.TransactionID
+        sub_tx_id = row.SubTransactionID
         
-        for row in sub_transactions_data:
-            sub_tx_id = row.SubTransactionID
-            
-            # Get product weight based on product type
-            product_weight = None
-            if row.ProductName == "Wet Leaves":
-                weight_result = db.query(models.WetLeaves.Weight).filter(models.WetLeaves.WetLeavesID == row.ProductID).first()
-                product_weight = weight_result.Weight if weight_result else None
-            elif row.ProductName == "Dry Leaves":
-                weight_result = db.query(models.DryLeaves.Processed_Weight).filter(models.DryLeaves.DryLeavesID == row.ProductID).first()
-                product_weight = weight_result.Processed_Weight if weight_result else None
-            elif row.ProductName == "Powder":
-                weight_result = db.query(models.Flour.Flour_Weight).filter(models.Flour.FlourID == row.ProductID).first()
-                product_weight = weight_result.Flour_Weight if weight_result else None
+        # Determine product weight based on product type
+        product_weight = None
+        if row.ProductTypeID == 1:  # Wet Leaves
+            product_weight = row.WetLeavesWeight
+        elif row.ProductTypeID == 2:  # Dry Leaves
+            product_weight = row.DryLeavesWeight
+        elif row.ProductTypeID == 3:  # Flour/Powder
+            product_weight = row.FlourWeight
 
-            # Create market shipment data
-            market_shipment = {
-                "ProductID": row.ProductID,
-                "InitialPrice": row.InitialPrice,
-                "Price": row.Price,
-                "Weight": product_weight,
-                "ShipmentStatus": row.ShipmentStatus,
-                "ProductName": row.ProductName
+        # Create market shipment data
+        market_shipment = {
+            "ProductID": row.ProductID,
+            "InitialPrice": row.InitialPrice,
+            "Price": row.Price,
+            "Weight": product_weight,
+            "ShipmentStatus": row.ShipmentStatus,
+            "ProductName": row.ProductName
+        }
+
+        # Initialize transaction if not exists
+        if tx_id not in transactions_dict:
+            transactions_dict[tx_id] = {
+                "sub_transactions": {}
             }
+        
+        # Initialize sub-transaction if not exists
+        if sub_tx_id not in transactions_dict[tx_id]["sub_transactions"]:
+            transactions_dict[tx_id]["sub_transactions"][sub_tx_id] = {
+                "SubTransactionID": sub_tx_id,
+                "CentraUsername": row.CentraUsername,
+                "SubTransactionStatus": row.SubTransactionStatus,
+                "market_shipments": []
+            }
+        
+        # Add the market shipment to this sub-transaction
+        transactions_dict[tx_id]["sub_transactions"][sub_tx_id]["market_shipments"].append(market_shipment)
 
-            # If this sub-transaction doesn't exist in our dict, create it
-            if sub_tx_id not in sub_transactions_dict:
-                sub_transactions_dict[sub_tx_id] = {
-                    "SubTransactionID": sub_tx_id,
-                    "CentraUsername": row.CentraUsername,
-                    "SubTransactionStatus": row.SubTransactionStatus,
-                    "market_shipments": []
-                }
-            
-            # Add the market shipment to this sub-transaction
-            sub_transactions_dict[sub_tx_id]["market_shipments"].append(market_shipment)
-
-        # Convert dictionary to list
-        sub_transactions_list = list(sub_transactions_dict.values())
+    # Build final result maintaining order
+    transactions_list = []
+    for main_transaction in main_transactions:
+        tx_id = main_transaction.TransactionID
+        
+        # Get sub-transactions for this transaction (if any)
+        sub_transactions_list = []
+        if tx_id in transactions_dict:
+            sub_transactions_list = list(transactions_dict[tx_id]["sub_transactions"].values())
 
         transaction_data = {
             "TransactionID": main_transaction.TransactionID,
             "TransactionStatus": main_transaction.TransactionStatus,
+            "ShippingLatitude": main_transaction.ShippingLatitude,
+            "ShippingLongitude": main_transaction.ShippingLongitude,
+            "ShippingAddress": main_transaction.ShippingAddress,
             "CreatedAt": main_transaction.CreatedAt.isoformat(),
             "ExpirationAt": main_transaction.ExpirationAt.isoformat() if main_transaction.ExpirationAt else None,
             "sub_transactions": sub_transactions_list
         }
         
-        result.append(transaction_data)
+        transactions_list.append(transaction_data)
 
-    return result
+    # Return paginated response with metadata
+    return {
+        "transactions": transactions_list,
+        "total": total_count,
+        "skip": skip,
+        "limit": limit,
+        "has_more": (skip + limit) < total_count
+    }
 
 # --- Get Transaction by ID (basic) ---
 def get_transaction_by_id(db: Session, transaction_id: UUID):
@@ -1715,6 +1977,7 @@ def get_transaction_details_by_id(db: Session, transaction_id: UUID, session_dat
         if sub_tx_id not in sub_transactions_dict:
             sub_transactions_dict[sub_tx_id] = {
                 "SubTransactionID": sub_tx_id,
+                "CentraID": row.CentraID,
                 "CentraUsername": row.CentraUsername,
                 "SubTransactionStatus": row.SubTransactionStatus,
                 "market_shipments": []
@@ -1729,6 +1992,9 @@ def get_transaction_details_by_id(db: Session, transaction_id: UUID, session_dat
     transaction_data = {
         "TransactionID": main_transaction.TransactionID,
         "TransactionStatus": main_transaction.TransactionStatus,
+        "ShippingLatitude": main_transaction.ShippingLatitude,
+        "ShippingLongitude": main_transaction.ShippingLongitude,
+        "ShippingAddress": main_transaction.ShippingAddress,
         "CreatedAt": main_transaction.CreatedAt.isoformat(),
         "ExpirationAt": main_transaction.ExpirationAt.isoformat() if main_transaction.ExpirationAt else None,
         "sub_transactions": sub_transactions_list
@@ -1742,8 +2008,16 @@ def update_transaction(db: Session, transaction_id: str, transaction_update: sch
     if not db_transaction:
         return None
 
-    if transaction_update.status is not None:
-        db_transaction.TransactionStatus = transaction_update.status
+    if transaction_update.TransactionStatus is not None:
+        db_transaction.TransactionStatus = transaction_update.TransactionStatus
+    
+    # Update shipping address if provided
+    if transaction_update.ShippingLatitude is not None:
+        db_transaction.ShippingLatitude = transaction_update.ShippingLatitude
+    if transaction_update.ShippingLongitude is not None:
+        db_transaction.ShippingLongitude = transaction_update.ShippingLongitude
+    if transaction_update.ShippingAddress is not None:
+        db_transaction.ShippingAddress = transaction_update.ShippingAddress
 
     db.commit()
     db.refresh(db_transaction)
@@ -1770,6 +2044,33 @@ def delete_transaction(db: Session, transaction_id: str):
     db.commit()
     print(f"Deleted Transaction ID: {db_transaction.TransactionID}")
     return True
+
+def update_transaction_shipping_address(db: Session, transaction_id: str, shipping_update: schemas.ShippingAddressUpdate, customer_id: str):
+    """Update shipping address for a transaction"""
+    db_transaction = db.query(models.Transaction).filter(
+        models.Transaction.TransactionID == transaction_id,
+        models.Transaction.CustomerID == customer_id
+    ).first()
+    
+    if not db_transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found or unauthorized")
+    
+    # Update shipping address fields
+    db_transaction.ShippingLatitude = shipping_update.ShippingLatitude
+    db_transaction.ShippingLongitude = shipping_update.ShippingLongitude
+    db_transaction.ShippingAddress = shipping_update.ShippingAddress
+    db_transaction.UpdatedAt = func.now()
+    
+    db.commit()
+    db.refresh(db_transaction)
+    
+    return {
+        "message": "Shipping address updated successfully",
+        "TransactionID": db_transaction.TransactionID,
+        "ShippingLatitude": db_transaction.ShippingLatitude,
+        "ShippingLongitude": db_transaction.ShippingLongitude,
+        "ShippingAddress": db_transaction.ShippingAddress
+    }
 
 
 # centra finance
@@ -1810,135 +2111,484 @@ def delete_centra_finance(db: Session, finance_id: int):
 
 def get_random_items(db: Session, item_type: str, limit: int = 100):
     chosen_item = ''
-    # Fetch data based on item type - only items with "Awaiting" status, not expired, and not locked
-    if item_type.lower() == 'flour':
-        items = db.query(models.Flour).filter(
-            models.Flour.Status == "Awaiting",
-            models.Flour.Expiration > func.now()
-        ).order_by(func.random()).limit(limit).all()
-        chosen_item = "Powder"
-    elif item_type.lower() == 'dry_leaves':
-        items = db.query(models.DryLeaves).filter(
-            models.DryLeaves.Status == "Awaiting",
-            models.DryLeaves.Expiration > func.now()
-        ).order_by(func.random()).limit(limit).all()
-        chosen_item = "Dry Leaves"
-    else:
-        raise ValueError("Invalid item type. Choose 'flour' or 'dry_leaves'.")
-
-    # Initialize the dictionary to group items by user ID (centra ID)
-    grouped_data = {}
-
-    currentDate = datetime.now()
+    product_type_id = 0
     
-    # Iterate through each item to populate grouped_data
-    for item in items:
-        user_id = item.UserID  # Assuming each item has a 'UserID' attribute
-        user = get_user_by_id(db, user_id)
-                    
-        expdayleft = (item.Expiration - currentDate).days
-                    
-        centra_base_settings = get_centra_base_settings_by_user_id_and_items(db, user_id, "Dry Leaves" if item_type=="dry_leaves" else "Powder")
-        discount_conditions = get_centra_setting_detail_by_user_id_and_item(db, user_id, chosen_item)
+    # Fetch data based on item type with JOINs to get all needed data in ONE query
+    if item_type.lower() == 'flour':
+        chosen_item = "Powder"
+        product_type_id = 3
         
-        if not user:
-            continue
+        items_query = (
+            db.query(
+                models.Flour.FlourID.label("item_id"),
+                models.Flour.UserID.label("user_id"),
+                models.Flour.Flour_Weight.label("weight"),
+                models.Flour.Expiration.label("expiration"),
+                models.User.Username.label("username"),
+                models.Products.ProductID.label("product_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .join(models.User, models.Flour.UserID == models.User.UserID)
+            .outerjoin(models.Products, models.Products.ProductName == "Powder")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.Flour.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.Flour.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(
+                models.Flour.Status == "Awaiting",
+                models.Flour.Expiration > func.now()
+            )
+            .order_by(func.random())
+            .limit(limit)
+            .all()
+        )
+    elif item_type.lower() == 'dry_leaves':
+        chosen_item = "Dry Leaves"
+        product_type_id = 2
+        
+        items_query = (
+            db.query(
+                models.DryLeaves.DryLeavesID.label("item_id"),
+                models.DryLeaves.UserID.label("user_id"),
+                models.DryLeaves.Processed_Weight.label("weight"),
+                models.DryLeaves.Expiration.label("expiration"),
+                models.User.Username.label("username"),
+                models.Products.ProductID.label("product_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .join(models.User, models.DryLeaves.UserID == models.User.UserID)
+            .outerjoin(models.Products, models.Products.ProductName == "Dry Leaves")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.DryLeaves.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.DryLeaves.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(
+                models.DryLeaves.Status == "Awaiting",
+                models.DryLeaves.Expiration > func.now()
+            )
+            .order_by(func.random())
+            .limit(limit)
+            .all()
+        )
+    elif item_type.lower() == 'wet_leaves':
+        chosen_item = "Wet Leaves"
+        product_type_id = 1
+        
+        items_query = (
+            db.query(
+                models.WetLeaves.WetLeavesID.label("item_id"),
+                models.WetLeaves.UserID.label("user_id"),
+                models.WetLeaves.Weight.label("weight"),
+                models.WetLeaves.Expiration.label("expiration"),
+                models.User.Username.label("username"),
+                models.Products.ProductID.label("product_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .join(models.User, models.WetLeaves.UserID == models.User.UserID)
+            .outerjoin(models.Products, models.Products.ProductName == "Wet Leaves")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.WetLeaves.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.WetLeaves.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(
+                models.WetLeaves.Status == "Awaiting",
+                models.WetLeaves.Expiration > func.now()
+            )
+            .order_by(func.random())
+            .limit(limit)
+            .all()
+        )
+    else:
+        raise ValueError("Invalid item type. Choose 'flour', 'dry_leaves', or 'wet_leaves'.")
 
-        username = user.Username
-        price = centra_base_settings[0].InitialPrice
-        def calculate_discounted_price(expiry_left, data, initial_price):
-            # Filter discounts where expiry_left <= expiry
-            applicable_discounts = [item for item in data if expiry_left <= item.ExpDayLeft]
-            
-            if not applicable_discounts:
-                # No discounts apply, return the initial price
-                return initial_price, False
-                       
-            # Find the discount with the smallest expiry value
-            best_discount = min(applicable_discounts, key=lambda x: x.ExpDayLeft).DiscountRate
-            
-            # Calculate the discounted price
-            discount_amount = (initial_price * best_discount) / 100
-            discounted_price = initial_price - discount_amount
-           
-            return round(discounted_price), True  # Round to the nearest integer
-
-        final_price, discounted = calculate_discounted_price(expdayleft, discount_conditions, price)
-
-        # Check item type to determine structure
-        if item_type.lower() == 'dry_leaves':
-            item_data = {"id": item.DryLeavesID, "weight": item.Processed_Weight, "initial_price": price, "price": final_price, "discounted": discounted}
-        elif item_type.lower() == 'flour':
-            item_data = {"id": item.FlourID, "weight": item.Flour_Weight, "initial_price": price, "price": final_price, "discounted": discounted}
-       
-        # Group by user_id (centra ID) instead of username
-        if user_id not in grouped_data:
-            grouped_data[user_id] = [item_data]
+    # Group items by user_id and collect discount conditions
+    currentDate = datetime.now()
+    grouped_data = {}
+    item_discounts = {}  # Track discount conditions per item
+    
+    for row in items_query:
+        item_key = (row.user_id, row.item_id)
+        
+        # Initialize item data if first time seeing this item
+        if item_key not in item_discounts:
+            item_discounts[item_key] = {
+                "user_id": row.user_id,
+                "item_id": row.item_id,
+                "weight": row.weight,
+                "expiration": row.expiration,
+                "initial_price": row.initial_price or 0,
+                "discount_conditions": []
+            }
+        
+        # Add discount condition if exists
+        if row.discount_rate is not None and row.exp_day_left is not None:
+            item_discounts[item_key]["discount_conditions"].append({
+                "DiscountRate": row.discount_rate,
+                "ExpDayLeft": row.exp_day_left
+            })
+    
+    # Calculate final prices and group by user_id
+    for item_data in item_discounts.values():
+        user_id = item_data["user_id"]
+        expdayleft = (item_data["expiration"] - currentDate).days
+        initial_price = item_data["initial_price"]
+        discount_conditions = item_data["discount_conditions"]
+        
+        # Calculate discounted price
+        applicable_discounts = [d for d in discount_conditions if expdayleft <= d["ExpDayLeft"]]
+        
+        if applicable_discounts:
+            best_discount = min(applicable_discounts, key=lambda x: x["ExpDayLeft"])["DiscountRate"]
+            final_price = round(initial_price - (initial_price * best_discount / 100))
+            discounted = True
         else:
-            grouped_data[user_id].append(item_data)
+            final_price = initial_price
+            discounted = False
+        
+        # Create item dict
+        item_dict = {
+            "id": item_data["item_id"],
+            "weight": item_data["weight"],
+            "initial_price": initial_price,
+            "price": final_price,
+            "discounted": discounted
+        }
+        
+        # Group by user_id
+        if user_id not in grouped_data:
+            grouped_data[user_id] = [item_dict]
+        else:
+            grouped_data[user_id].append(item_dict)
 
     return grouped_data
 
 def get_items(db: Session, item_type: str, limit: int = 100):
-    # Fetch data based on item type
-    if item_type.lower() == 'flour':
-        items = db.query(models.Flour).limit(limit).all()
+    # ✅ OPTIMIZED: Fetch data with JOINs to get pricing in ONE query
+    if item_type.lower() == 'flour' or item_type.lower() == 'powder':
+        items_query = (
+            db.query(
+                models.Flour.FlourID.label("item_id"),
+                models.Flour.UserID.label("user_id"),
+                models.Flour.Flour_Weight.label("weight"),
+                models.Flour.Expiration.label("expiration"),
+                models.Products.ProductID.label("product_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .select_from(models.Flour)
+            .outerjoin(models.Products, models.Products.ProductName == "Powder")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.Flour.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.Flour.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(
+                models.Flour.Status == "Awaiting",
+                models.Flour.Expiration > func.now()
+            )
+            .limit(limit)
+            .all()
+        )
     elif item_type.lower() == 'dry_leaves':
-        items = db.query(models.DryLeaves).limit(limit).all()
+        items_query = (
+            db.query(
+                models.DryLeaves.DryLeavesID.label("item_id"),
+                models.DryLeaves.UserID.label("user_id"),
+                models.DryLeaves.Processed_Weight.label("weight"),
+                models.DryLeaves.Expiration.label("expiration"),
+                models.Products.ProductID.label("product_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .select_from(models.DryLeaves)
+            .outerjoin(models.Products, models.Products.ProductName == "Dry Leaves")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.DryLeaves.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.DryLeaves.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(
+                models.DryLeaves.Status == "Awaiting",
+                models.DryLeaves.Expiration > func.now()
+            )
+            .limit(limit)
+            .all()
+        )
+    elif item_type.lower() == 'wet_leaves':
+        items_query = (
+            db.query(
+                models.WetLeaves.WetLeavesID.label("item_id"),
+                models.WetLeaves.UserID.label("user_id"),
+                models.WetLeaves.Weight.label("weight"),
+                models.WetLeaves.Expiration.label("expiration"),
+                models.Products.ProductID.label("product_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .select_from(models.WetLeaves)
+            .outerjoin(models.Products, models.Products.ProductName == "Wet Leaves")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.WetLeaves.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.WetLeaves.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(
+                models.WetLeaves.Status == "Awaiting",
+                models.WetLeaves.Expiration > func.now()
+            )
+            .limit(limit)
+            .all()
+        )
     else:
-        raise ValueError("Invalid item type. Choose 'flour' or 'dry_leaves'.")
+        raise ValueError("Invalid item type. Choose 'flour', 'dry_leaves', or 'wet_leaves'.")
 
-    # Initialize the dictionary to group items by user ID (centra ID)
+    # Group items by user_id and collect discount conditions
+    currentDate = datetime.now()
     grouped_data = {}
-
-    # Iterate through each item to populate grouped_data
-    for item in items:
-        user_id = item.UserID  # Get the centra ID directly
-
-        # Check item type to determine structure
-        if item_type.lower() == 'dry_leaves':
-            item_data = {"id": item.DryLeavesID, "weight": item.Processed_Weight}
-        elif item_type.lower() == 'flour':
-            item_data = {"id": item.FlourID, "weight": item.Flour_Weight}
-       
-        # Group by user_id (centra ID)
-        if user_id not in grouped_data:
-            grouped_data[user_id] = [item_data]
+    item_discounts = {}  # Track discount conditions per item
+    
+    for row in items_query:
+        item_key = (row.user_id, row.item_id)
+        
+        # Initialize item data if first time seeing this item
+        if item_key not in item_discounts:
+            item_discounts[item_key] = {
+                "user_id": row.user_id,
+                "item_id": row.item_id,
+                "weight": row.weight,
+                "expiration": row.expiration,
+                "initial_price": row.initial_price or 0,
+                "discount_conditions": []
+            }
+        
+        # Add discount condition if exists
+        if row.discount_rate is not None and row.exp_day_left is not None:
+            item_discounts[item_key]["discount_conditions"].append({
+                "DiscountRate": row.discount_rate,
+                "ExpDayLeft": row.exp_day_left
+            })
+    
+    # Calculate final prices and group by user_id
+    for item_data in item_discounts.values():
+        user_id = item_data["user_id"]
+        expdayleft = (item_data["expiration"] - currentDate).days
+        initial_price = item_data["initial_price"]
+        discount_conditions = item_data["discount_conditions"]
+        
+        # Calculate discounted price
+        applicable_discounts = [d for d in discount_conditions if expdayleft <= d["ExpDayLeft"]]
+        
+        if applicable_discounts:
+            best_discount = min(applicable_discounts, key=lambda x: x["ExpDayLeft"])["DiscountRate"]
+            final_price = round(initial_price - (initial_price * best_discount / 100))
+            discounted = True
         else:
-            grouped_data[user_id].append(item_data)
+            final_price = initial_price
+            discounted = False
+        
+        # Create item dict with pricing
+        item_dict = {
+            "id": item_data["item_id"],
+            "weight": item_data["weight"],
+            "initial_price": initial_price,
+            "price": final_price,
+            "discounted": discounted
+        }
+        
+        # Group by user_id
+        if user_id not in grouped_data:
+            grouped_data[user_id] = [item_dict]
+        else:
+            grouped_data[user_id].append(item_dict)
 
     return grouped_data
 
 def get_items_by_selected_centra(db: Session, item_type: str, users: List[UUID]):
     # Convert UUIDs to strings to match the VARCHAR column type
     user_ids = [str(user_id) for user_id in users]
-    if item_type.lower() == 'flour':
-        items = db.query(models.Flour).filter(
-            models.Flour.UserID.in_(user_ids),
-            models.Flour.Status == "Awaiting",
-            models.Flour.Expiration > func.now()
-        ).order_by(func.random()).all()
+    
+    # Fetch data based on item type with JOINs to get pricing data
+    if item_type.lower() == 'flour' or item_type.lower() == 'powder':
+        items_query = (
+            db.query(
+                models.Flour.FlourID.label("item_id"),
+                models.Flour.UserID.label("user_id"),
+                models.Flour.Flour_Weight.label("weight"),
+                models.Flour.Expiration.label("expiration"),
+                models.Products.ProductID.label("product_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .select_from(models.Flour)
+            .outerjoin(models.Products, models.Products.ProductName == "Powder")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.Flour.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.Flour.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(
+                models.Flour.UserID.in_(user_ids),
+                models.Flour.Status == "Awaiting",
+                models.Flour.Expiration > func.now()
+            )
+            .order_by(func.random())
+            .all()
+        )
     elif item_type.lower() == 'dry_leaves':
-        items = db.query(models.DryLeaves).filter(
-            models.DryLeaves.UserID.in_(user_ids),
-            models.DryLeaves.Status == "Awaiting",
-            models.DryLeaves.Expiration > func.now()
-        ).order_by(func.random()).all()
+        items_query = (
+            db.query(
+                models.DryLeaves.DryLeavesID.label("item_id"),
+                models.DryLeaves.UserID.label("user_id"),
+                models.DryLeaves.Processed_Weight.label("weight"),
+                models.DryLeaves.Expiration.label("expiration"),
+                models.Products.ProductID.label("product_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .select_from(models.DryLeaves)
+            .outerjoin(models.Products, models.Products.ProductName == "Dry Leaves")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.DryLeaves.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.DryLeaves.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(
+                models.DryLeaves.UserID.in_(user_ids),
+                models.DryLeaves.Status == "Awaiting",
+                models.DryLeaves.Expiration > func.now()
+            )
+            .order_by(func.random())
+            .all()
+        )
+    elif item_type.lower() == 'wet_leaves':
+        items_query = (
+            db.query(
+                models.WetLeaves.WetLeavesID.label("item_id"),
+                models.WetLeaves.UserID.label("user_id"),
+                models.WetLeaves.Weight.label("weight"),
+                models.WetLeaves.Expiration.label("expiration"),
+                models.Products.ProductID.label("product_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .select_from(models.WetLeaves)
+            .outerjoin(models.Products, models.Products.ProductName == "Wet Leaves")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.WetLeaves.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.WetLeaves.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(
+                models.WetLeaves.UserID.in_(user_ids),
+                models.WetLeaves.Status == "Awaiting",
+                models.WetLeaves.Expiration > func.now()
+            )
+            .order_by(func.random())
+            .all()
+        )
     else:
-        raise ValueError("Invalid item type. Choose 'flour' or 'dry_leaves'.")
+        raise ValueError("Invalid item type. Choose 'flour', 'dry_leaves', or 'wet_leaves'.")
 
+    # Group items by user_id and collect discount conditions
+    currentDate = datetime.now()
     grouped_data = {}
-
-    for item in items:
-        user_id = item.UserID
+    item_discounts = {}  # Track discount conditions per item
+    
+    for row in items_query:
+        item_key = (row.user_id, row.item_id)
         
-        item_data = {"id": item.DryLeavesID if item_type == 'dry_leaves' else item.FlourID,
-                     "weight": item.Processed_Weight if item_type == 'dry_leaves' else item.Flour_Weight}
+        # Initialize item data if first time seeing this item
+        if item_key not in item_discounts:
+            item_discounts[item_key] = {
+                "user_id": row.user_id,
+                "item_id": row.item_id,
+                "weight": row.weight,
+                "expiration": row.expiration,
+                "initial_price": row.initial_price or 0,
+                "discount_conditions": []
+            }
         
-        if user_id not in grouped_data:
-            grouped_data[user_id] = [item_data]
+        # Add discount condition if exists
+        if row.discount_rate is not None and row.exp_day_left is not None:
+            item_discounts[item_key]["discount_conditions"].append({
+                "DiscountRate": row.discount_rate,
+                "ExpDayLeft": row.exp_day_left
+            })
+    
+    # Calculate final prices and group by user_id
+    for item_data in item_discounts.values():
+        user_id = item_data["user_id"]
+        expdayleft = (item_data["expiration"] - currentDate).days
+        initial_price = item_data["initial_price"]
+        discount_conditions = item_data["discount_conditions"]
+        
+        # Calculate discounted price
+        applicable_discounts = [d for d in discount_conditions if expdayleft <= d["ExpDayLeft"]]
+        
+        if applicable_discounts:
+            best_discount = min(applicable_discounts, key=lambda x: x["ExpDayLeft"])["DiscountRate"]
+            final_price = round(initial_price - (initial_price * best_discount / 100))
+            discounted = True
         else:
-            grouped_data[user_id].append(item_data)
+            final_price = initial_price
+            discounted = False
+        
+        # Create item dict with pricing
+        item_dict = {
+            "id": item_data["item_id"],
+            "weight": item_data["weight"],
+            "initial_price": initial_price,
+            "price": final_price,
+            "discounted": discounted
+        }
+        
+        # Group by user_id
+        if user_id not in grouped_data:
+            grouped_data[user_id] = [item_dict]
+        else:
+            grouped_data[user_id].append(item_dict)
 
     return grouped_data
 
@@ -1949,69 +2599,197 @@ def get_random_centras(db: Session, numOfCentra: int):
 
 def get_random_items_by_centra(db: Session, item_type: str, numOfCentra: int):
     centraList = get_random_centras(db, numOfCentra)
-    # Fetch data based on item type
-    if item_type.lower() == 'flour':
-        # Fetch flour items filtered by UserID from the selected centra
-        items = db.query(models.Flour).filter(models.Flour.UserID.in_([centra.UserID for centra in centraList])).order_by(func.random()).all()
+    centra_ids = [centra.UserID for centra in centraList]
+    
+    # ✅ OPTIMIZED: Fetch items with pricing data using JOINs to avoid N+1
+    if item_type.lower() == 'flour' or item_type.lower() == 'powder':
+        items_query = (
+            db.query(
+                models.Flour.FlourID.label("item_id"),
+                models.Flour.UserID.label("user_id"),
+                models.Flour.Flour_Weight.label("weight"),
+                models.Flour.Expiration.label("expiration"),
+                models.Products.ProductID.label("product_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .select_from(models.Flour)
+            .outerjoin(models.Products, models.Products.ProductName == "Powder")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.Flour.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.Flour.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(
+                models.Flour.UserID.in_(centra_ids),
+                models.Flour.Status == "Awaiting",
+                models.Flour.Expiration > func.now()
+            )
+            .order_by(func.random())
+            .all()
+        )
     elif item_type.lower() == 'dry_leaves':
-        # Fetch dry leaves items filtered by UserID from the selected centra
-        items = db.query(models.DryLeaves).filter(models.DryLeaves.UserID.in_([centra.UserID for centra in centraList])).order_by(func.random()).all()
+        items_query = (
+            db.query(
+                models.DryLeaves.DryLeavesID.label("item_id"),
+                models.DryLeaves.UserID.label("user_id"),
+                models.DryLeaves.Processed_Weight.label("weight"),
+                models.DryLeaves.Expiration.label("expiration"),
+                models.Products.ProductID.label("product_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .select_from(models.DryLeaves)
+            .outerjoin(models.Products, models.Products.ProductName == "Dry Leaves")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.DryLeaves.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.DryLeaves.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(
+                models.DryLeaves.UserID.in_(centra_ids),
+                models.DryLeaves.Status == "Awaiting",
+                models.DryLeaves.Expiration > func.now()
+            )
+            .order_by(func.random())
+            .all()
+        )
+    elif item_type.lower() == 'wet_leaves':
+        items_query = (
+            db.query(
+                models.WetLeaves.WetLeavesID.label("item_id"),
+                models.WetLeaves.UserID.label("user_id"),
+                models.WetLeaves.Weight.label("weight"),
+                models.WetLeaves.Expiration.label("expiration"),
+                models.Products.ProductID.label("product_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .select_from(models.WetLeaves)
+            .outerjoin(models.Products, models.Products.ProductName == "Wet Leaves")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.WetLeaves.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.WetLeaves.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(
+                models.WetLeaves.UserID.in_(centra_ids),
+                models.WetLeaves.Status == "Awaiting",
+                models.WetLeaves.Expiration > func.now()
+            )
+            .order_by(func.random())
+            .all()
+        )
     else:
-        raise ValueError("Invalid item type. Choose 'flour' or 'dry_leaves'.")
+        raise ValueError("Invalid item type. Choose 'flour', 'dry_leaves', or 'wet_leaves'.")
 
-    # Initialize the dictionary to group items by user ID (centra ID)
+    # Group items by user_id and collect discount conditions
+    currentDate = datetime.now()
     grouped_data = {}
-
-    # Iterate through each item to populate grouped_data
-    for item in items:
-        user_id = item.UserID  # Get the centra ID directly
-
-        # Check item type to determine structure
-        if item_type.lower() == 'dry_leaves':
-            item_data = {"id": item.DryLeavesID, "weight": item.Processed_Weight}
-        elif item_type.lower() == 'flour':
-            item_data = {"id": item.FlourID, "weight": item.Flour_Weight}
-       
-        # Group by user_id (centra ID)
-        if user_id not in grouped_data:
-            grouped_data[user_id] = [item_data]
+    item_discounts = {}  # Track discount conditions per item
+    
+    for row in items_query:
+        item_key = (row.user_id, row.item_id)
+        
+        # Initialize item data if first time seeing this item
+        if item_key not in item_discounts:
+            item_discounts[item_key] = {
+                "user_id": row.user_id,
+                "item_id": row.item_id,
+                "weight": row.weight,
+                "expiration": row.expiration,
+                "initial_price": row.initial_price or 0,
+                "discount_conditions": []
+            }
+        
+        # Add discount condition if exists
+        if row.discount_rate is not None and row.exp_day_left is not None:
+            item_discounts[item_key]["discount_conditions"].append({
+                "DiscountRate": row.discount_rate,
+                "ExpDayLeft": row.exp_day_left
+            })
+    
+    # Calculate final prices and group by user_id
+    for item_data in item_discounts.values():
+        user_id = item_data["user_id"]
+        expdayleft = (item_data["expiration"] - currentDate).days
+        initial_price = item_data["initial_price"]
+        discount_conditions = item_data["discount_conditions"]
+        
+        # Calculate discounted price
+        applicable_discounts = [d for d in discount_conditions if expdayleft <= d["ExpDayLeft"]]
+        
+        if applicable_discounts:
+            best_discount = min(applicable_discounts, key=lambda x: x["ExpDayLeft"])["DiscountRate"]
+            final_price = round(initial_price - (initial_price * best_discount / 100))
+            discounted = True
         else:
-            grouped_data[user_id].append(item_data)
+            final_price = initial_price
+            discounted = False
+        
+        # Create item dict with pricing
+        item_dict = {
+            "id": item_data["item_id"],
+            "weight": item_data["weight"],
+            "initial_price": initial_price,
+            "price": final_price,
+            "discounted": discounted
+        }
+        
+        # Group by user_id
+        if user_id not in grouped_data:
+            grouped_data[user_id] = [item_dict]
+        else:
+            grouped_data[user_id].append(item_dict)
 
     return grouped_data
 
 def get_all_items(db: Session, item_type: str):
-    # Fetch data based on item type
+    # Fetch data with JOIN to get username in a single query
     if item_type.lower() == 'flour':
-        items = db.query(models.Flour).all()
+        items = (
+            db.query(
+                models.Flour.FlourID.label("item_id"),
+                models.Flour.Flour_Weight.label("weight"),
+                models.User.Username.label("username")
+            )
+            .join(models.User, models.Flour.UserID == models.User.UserID)
+            .all()
+        )
     elif item_type.lower() == 'dry_leaves':
-        items = db.query(models.DryLeaves).all()
+        items = (
+            db.query(
+                models.DryLeaves.DryLeavesID.label("item_id"),
+                models.DryLeaves.Processed_Weight.label("weight"),
+                models.User.Username.label("username")
+            )
+            .join(models.User, models.DryLeaves.UserID == models.User.UserID)
+            .all()
+        )
     else:
         raise ValueError("Invalid item type. Choose 'flour' or 'dry_leaves'.")
 
-    # Initialize the dictionary to group items by username
+    # Group items by username
     grouped_data = {}
-
-    # Iterate through each item to populate grouped_data
-    for item in items:
-        user_id = item.UserID  # Assuming each item has a 'UserID' attribute
-        user = get_user_by_id(db, user_id)
-        if not user:
-            continue
-
-        username = user.Username
-
-        # Check item type to determine structure
-        if item_type.lower() == 'dry_leaves':
-            item_data = {"id": item.DryLeavesID, "weight": item.Processed_Weight}
-        elif item_type.lower() == 'flour':
-            item_data = {"id": item.FlourID, "weight": item.Flour_Weight}
-       
-        # Group by username
-        if username not in grouped_data:
-            grouped_data[username] = [item_data]
+    for row in items:
+        item_data = {"id": row.item_id, "weight": row.weight}
+        
+        if row.username not in grouped_data:
+            grouped_data[row.username] = [item_data]
         else:
-            grouped_data[username].append(item_data)
+            grouped_data[row.username].append(item_data)
 
     return grouped_data
 
@@ -2090,7 +2868,7 @@ def bulk_algorithm_by_selected_centra(db: Session, item_type: str, target_weight
     memo: dict[tuple[int, int], int] = {}
     next_choice: dict[tuple[int, int], tuple[int, int, bool]] = {}
 
-    def dp(weight: int, idx: int, items: list[tuple[int, str, int]]) -> int:
+    def dp(weight: int, idx: int, items: list[tuple[int, str, int, int, bool, int]]) -> int:
         if (weight, idx) in memo:
             return memo[(weight, idx)]
         if weight <= 0 or idx >= len(items):
@@ -2109,12 +2887,22 @@ def bulk_algorithm_by_selected_centra(db: Session, item_type: str, target_weight
         return memo[(weight, idx)]
 
     def knapsack(target_weight: int, item_weights: dict[str, list[dict[str, int]]]):
-        items: list[tuple[int, str, int]] = []
+        items: list[tuple[int, str, int, int, bool, int]] = []
         memo.clear()
         next_choice.clear()
         
         for centra_id, weights in item_weights.items():
-            items += [(item["weight"], centra_id, item["id"]) for item in weights]
+            items += [
+                (
+                    item.get("weight", 0),
+                    centra_id,
+                    item.get("id", 0),
+                    item.get("price", 0),
+                    item.get("discounted", False),
+                    item.get("initial_price", 0),
+                )
+                for item in weights
+            ]
 
         max_value = dp(target_weight, 0, items)
         
@@ -2122,11 +2910,17 @@ def bulk_algorithm_by_selected_centra(db: Session, item_type: str, target_weight
         current = (target_weight, 0)
 
         while next_choice.get(current):
-            weight, centra_id, item_id = items[current[1]]
+            weight, centra_id, item_id, price, discounted, initial_price = items[current[1]]
             if next_choice[current][2]:
                 if centra_id not in choices:
                     choices[centra_id] = []
-                choices[centra_id].append({"id": item_id, "weight": weight})
+                choices[centra_id].append({
+                    "id": item_id,
+                    "weight": weight,
+                    "price": price,
+                    "discounted": discounted,
+                    "initial_price": initial_price,
+                })
             current = next_choice[current][:2]
         
         return max_value, choices
@@ -2143,7 +2937,8 @@ def get_marketplace_items(db: Session, skip: int = 0, limit: int = 15):
         models.WetLeaves.Expiration.label("expiration"),
         models.WetLeaves.Weight.label("stock"),
         models.WetLeaves.Status.label("status"),
-        literal_column("'Wet Leaves'").label("product_name")
+        literal_column("'Wet Leaves'").label("product_name"),
+        literal_column("1").label("product_type_id")
     ).filter(models.WetLeaves.Status == "Awaiting")
 
     dry = db.query(
@@ -2152,7 +2947,8 @@ def get_marketplace_items(db: Session, skip: int = 0, limit: int = 15):
         models.DryLeaves.Expiration.label("expiration"),
         models.DryLeaves.Processed_Weight.label("stock"),
         models.DryLeaves.Status.label("status"),
-        literal_column("'Dry Leaves'").label("product_name")
+        literal_column("'Dry Leaves'").label("product_name"),
+        literal_column("2").label("product_type_id")
     ).filter(models.DryLeaves.Status == "Awaiting")
 
     flour = db.query(
@@ -2161,16 +2957,20 @@ def get_marketplace_items(db: Session, skip: int = 0, limit: int = 15):
         models.Flour.Expiration.label("expiration"),
         models.Flour.Flour_Weight.label("stock"),
         models.Flour.Status.label("status"),
-        literal_column("'Powder'").label("product_name")
+        literal_column("'Powder'").label("product_name"),
+        literal_column("3").label("product_type_id")
     ).filter(models.Flour.Status == "Awaiting")
 
     # Combine queries with UNION ALL
     union_query = union_all(wet, dry, flour).alias("products")
 
-    # Create an alias for the User table
+    # Create aliases for the tables
     user_alias = aliased(models.User)
+    product_alias = aliased(models.Products)
+    base_settings_alias = aliased(models.CentraBaseSettings)
+    detail_settings_alias = aliased(models.CentraSettingDetail)
 
-    # Create the full select statement with join to get username
+    # Create the full select statement with ALL joins to get pricing info in ONE query
     stmt = select(
         union_query.c.id,
         union_query.c.user_id,
@@ -2178,9 +2978,20 @@ def get_marketplace_items(db: Session, skip: int = 0, limit: int = 15):
         union_query.c.expiration,
         union_query.c.product_name,
         union_query.c.stock,
-        union_query.c.status
+        union_query.c.status,
+        union_query.c.product_type_id,
+        base_settings_alias.InitialPrice,
+        detail_settings_alias.DiscountRate,
+        detail_settings_alias.ExpDayLeft
     ).join(user_alias, union_query.c.user_id == user_alias.UserID
-    ).filter(
+    ).outerjoin(product_alias, union_query.c.product_name == product_alias.ProductName
+    ).outerjoin(base_settings_alias, and_(
+        base_settings_alias.UserID == union_query.c.user_id,
+        base_settings_alias.ProductID == product_alias.ProductID
+    )).outerjoin(detail_settings_alias, and_(
+        detail_settings_alias.UserID == union_query.c.user_id,
+        detail_settings_alias.ProductID == product_alias.ProductID
+    )).filter(
         union_query.c.expiration > func.now()  # Filter out expired products
     ).order_by(func.random()).offset(skip).limit(limit)
 
@@ -2188,34 +2999,56 @@ def get_marketplace_items(db: Session, skip: int = 0, limit: int = 15):
     rows = db.execute(stmt).fetchall()
     
     currentDate = datetime.now()
-    results = []
-
+    
+    # Group rows by product ID to handle multiple discount conditions
+    products_map = {}
     for row in rows:
-        source = row.product_name
-        centra_base_settings = get_centra_base_settings_by_user_id_and_items(db, row.user_id, source)
-        discount_conditions = get_centra_setting_detail_by_user_id_and_item(db, row.user_id, source)
-
-        price = centra_base_settings[0].InitialPrice if centra_base_settings else 0
-        expdayleft = (row.expiration - currentDate).days
-
-        def calculate_discounted_price(expiry_left, data, initial_price):
-            applicable = [item for item in data if expiry_left <= item.ExpDayLeft]
-            if not applicable:
-                return initial_price
-            best = min(applicable, key=lambda x: x.ExpDayLeft).DiscountRate
-            return round(initial_price - (initial_price * best / 100))
-
-        final_price = calculate_discounted_price(expdayleft, discount_conditions, price)
-
+        product_key = (row.id, row.product_name)
+        
+        if product_key not in products_map:
+            products_map[product_key] = {
+                "id": row.id,
+                "product_name": row.product_name,
+                "stock": row.stock,
+                "centra_name": row.username,
+                "initial_price": row.InitialPrice or 0,
+                "expiration": row.expiration,
+                "status": row.status,
+                "discount_conditions": []
+            }
+        
+        # Add discount condition if exists
+        if row.DiscountRate is not None and row.ExpDayLeft is not None:
+            products_map[product_key]["discount_conditions"].append({
+                "DiscountRate": row.DiscountRate,
+                "ExpDayLeft": row.ExpDayLeft
+            })
+    
+    # Calculate final prices
+    results = []
+    for product_data in products_map.values():
+        expdayleft = (product_data["expiration"] - currentDate).days
+        initial_price = product_data["initial_price"]
+        
+        # Calculate discounted price
+        discount_conditions = product_data["discount_conditions"]
+        applicable = [item for item in discount_conditions if expdayleft <= item["ExpDayLeft"]]
+        
+        if applicable:
+            best_discount = min(applicable, key=lambda x: x["ExpDayLeft"])["DiscountRate"]
+            final_price = round(initial_price - (initial_price * best_discount / 100))
+        else:
+            final_price = initial_price
+        
         results.append({
-            "id": row.id,
-            "product_name": row.product_name,
-            "stock": row.stock,
-            "centra_name": row.username,
-            "initial_price": price,
+            "id": product_data["id"],
+            "product_name": product_data["product_name"],
+            "stock": product_data["stock"],
+            "centra_name": product_data["centra_name"],
+            "initial_price": initial_price,
             "price": final_price,
             "expiry_time": expdayleft,
-            "status": row.status
+            "status": product_data["status"]
         })
 
     return results
@@ -2663,10 +3496,26 @@ def get_product_lock_status(db: Session, product_type_id: int, product_id: int):
     except Exception as e:
         raise e
     
-def search_products_by_query(db: Session, query: str, skip: int = 0, limit: int = 10, show_all: bool = False):
+def search_products_by_query(db: Session, query: str, skip: int = 0, limit: int = 10, show_all: bool = False, product_types: list = None, prid: str = None):
     from datetime import datetime
 
-    search_pattern = f"%{query}%"
+    # Check if query contains prid=xxx pattern
+    if "prid=" in query.lower():
+        # Extract prid value from query
+        parts = query.lower().split("prid=")
+        if len(parts) > 1:
+            prid = parts[1].split()[0].strip()  # Get the prid value (first word after prid=)
+            # Remove prid from the search query
+            query = parts[0].strip()
+            if not query:  # If query is empty after removing prid, search for everything
+                query = ""
+
+    search_pattern = f"%{query}%" if query else "%"
+    
+    # Determine which product types to include
+    include_wetleaves = not product_types or "Wet Leaves" in product_types
+    include_dryleaves = not product_types or "Dry Leaves" in product_types
+    include_powder = not product_types or "Powder" in product_types
 
     # Only filter by status/expiration if show_all is False
     wetleaves_filters = [
@@ -2702,103 +3551,197 @@ def search_products_by_query(db: Session, query: str, skip: int = 0, limit: int 
             models.Flour.Expiration > func.now()
         ]
 
-    wetleaves_query = (
-        db.query(
-            models.WetLeaves.WetLeavesID.label("id"),
-            models.WetLeaves.UserID.label("user_id"),
-            models.WetLeaves.Expiration.label("expiration"),
-            models.WetLeaves.Weight.label("weight"),
-            models.WetLeaves.Status.label("status"),
-            literal_column("'Wet Leaves'").label("product_name"),
-            models.User.Username.label("username"),
-            models.User.UserID.label("centra_id")
+    # ✅ OPTIMIZED: Build individual queries with JOINs to get pricing data
+    queries = []
+    
+    if include_wetleaves:
+        wetleaves_query = (
+            db.query(
+                models.WetLeaves.WetLeavesID.label("id"),
+                models.WetLeaves.UserID.label("user_id"),
+                models.WetLeaves.Expiration.label("expiration"),
+                models.WetLeaves.Weight.label("weight"),
+                models.WetLeaves.Status.label("status"),
+                literal_column("'Wet Leaves'").label("product_name"),
+                models.User.Username.label("username"),
+                models.User.UserID.label("centra_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .select_from(models.WetLeaves)
+            .join(models.User, models.WetLeaves.UserID == models.User.UserID)
+            .outerjoin(models.Products, models.Products.ProductName == "Wet Leaves")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.WetLeaves.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.WetLeaves.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(*wetleaves_filters)
         )
-        .join(models.User, models.WetLeaves.UserID == models.User.UserID)
-        .filter(*wetleaves_filters)
-    )
+        queries.append(wetleaves_query)
 
-    dryleaves_query = (
-        db.query(
-            models.DryLeaves.DryLeavesID.label("id"),
-            models.DryLeaves.UserID.label("user_id"),
-            models.DryLeaves.Expiration.label("expiration"),
-            models.DryLeaves.Processed_Weight.label("weight"),
-            models.DryLeaves.Status.label("status"),
-            literal_column("'Dry Leaves'").label("product_name"),
-            models.User.Username.label("username"),
-            models.User.UserID.label("centra_id")
+    if include_dryleaves:
+        dryleaves_query = (
+            db.query(
+                models.DryLeaves.DryLeavesID.label("id"),
+                models.DryLeaves.UserID.label("user_id"),
+                models.DryLeaves.Expiration.label("expiration"),
+                models.DryLeaves.Processed_Weight.label("weight"),
+                models.DryLeaves.Status.label("status"),
+                literal_column("'Dry Leaves'").label("product_name"),
+                models.User.Username.label("username"),
+                models.User.UserID.label("centra_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .select_from(models.DryLeaves)
+            .join(models.User, models.DryLeaves.UserID == models.User.UserID)
+            .outerjoin(models.Products, models.Products.ProductName == "Dry Leaves")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.DryLeaves.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.DryLeaves.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(*dryleaves_filters)
         )
-        .join(models.User, models.DryLeaves.UserID == models.User.UserID)
-        .filter(*dryleaves_filters)
-    )
+        queries.append(dryleaves_query)
 
-    powder_query = (
-        db.query(
-            models.Flour.FlourID.label("id"),
-            models.Flour.UserID.label("user_id"),
-            models.Flour.Expiration.label("expiration"),
-            models.Flour.Flour_Weight.label("weight"),
-            models.Flour.Status.label("status"),
-            literal_column("'Powder'").label("product_name"),
-            models.User.Username.label("username"),
-            models.User.UserID.label("centra_id")
+    if include_powder:
+        powder_query = (
+            db.query(
+                models.Flour.FlourID.label("id"),
+                models.Flour.UserID.label("user_id"),
+                models.Flour.Expiration.label("expiration"),
+                models.Flour.Flour_Weight.label("weight"),
+                models.Flour.Status.label("status"),
+                literal_column("'Powder'").label("product_name"),
+                models.User.Username.label("username"),
+                models.User.UserID.label("centra_id"),
+                models.CentraBaseSettings.InitialPrice.label("initial_price"),
+                models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+                models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+            )
+            .select_from(models.Flour)
+            .join(models.User, models.Flour.UserID == models.User.UserID)
+            .outerjoin(models.Products, models.Products.ProductName == "Powder")
+            .outerjoin(models.CentraBaseSettings, and_(
+                models.CentraBaseSettings.UserID == models.Flour.UserID,
+                models.CentraBaseSettings.ProductID == models.Products.ProductID
+            ))
+            .outerjoin(models.CentraSettingDetail, and_(
+                models.CentraSettingDetail.UserID == models.Flour.UserID,
+                models.CentraSettingDetail.ProductID == models.Products.ProductID
+            ))
+            .filter(*powder_filters)
         )
-        .join(models.User, models.Flour.UserID == models.User.UserID)
-        .filter(*powder_filters)
-    )
+        queries.append(powder_query)
 
-    combined_query = wetleaves_query.union_all(dryleaves_query).union_all(powder_query)
+    # If no queries match the filter, return empty results
+    if not queries:
+        return []
+
+    # Combine all queries
+    combined_query = queries[0]
+    for query in queries[1:]:
+        combined_query = combined_query.union_all(query)
     paged_query = combined_query.offset(skip).limit(limit)
     rows = paged_query.all()
 
     currentDate = datetime.now()
-    results = []
-
+    
+    # ✅ OPTIMIZED: Group rows by product to handle multiple discount conditions
+    products_map = {}
     for row in rows:
-        source = row.product_name
-        centra_base_settings = get_centra_base_settings_by_user_id_and_items(db, row.user_id, source)
-        discount_conditions = get_centra_setting_detail_by_user_id_and_item(db, row.user_id, source)
-
-        price = centra_base_settings[0].InitialPrice if centra_base_settings else 0
-        expdayleft = (row.expiration - currentDate).days
-
-        def calculate_discounted_price(expiry_left, data, initial_price):
-            applicable = [item for item in data if expiry_left <= item.ExpDayLeft]
-            if not applicable:
-                return initial_price
-            best = min(applicable, key=lambda x: x.ExpDayLeft).DiscountRate
-            return round(initial_price - (initial_price * best / 100))
-
-        final_price = calculate_discounted_price(expdayleft, discount_conditions, price)
+        product_key = (row.id, row.product_name)
+        
+        if product_key not in products_map:
+            products_map[product_key] = {
+                "id": row.id,
+                "product_name": row.product_name,
+                "stock": row.weight,
+                "centra_name": row.username,
+                "expiration": row.expiration,
+                "status": row.status,
+                "initial_price": row.initial_price or 0,
+                "discount_conditions": []
+            }
+        
+        # Add discount condition if exists
+        if row.discount_rate is not None and row.exp_day_left is not None:
+            products_map[product_key]["discount_conditions"].append({
+                "DiscountRate": row.discount_rate,
+                "ExpDayLeft": row.exp_day_left
+            })
+    
+    # Calculate final prices
+    results = []
+    for product_data in products_map.values():
+        expdayleft = (product_data["expiration"] - currentDate).days
+        initial_price = product_data["initial_price"]
+        discount_conditions = product_data["discount_conditions"]
+        
+        # Calculate discounted price
+        applicable = [item for item in discount_conditions if expdayleft <= item["ExpDayLeft"]]
+        
+        if applicable:
+            best_discount = min(applicable, key=lambda x: x["ExpDayLeft"])["DiscountRate"]
+            final_price = round(initial_price - (initial_price * best_discount / 100))
+        else:
+            final_price = initial_price
 
         results.append({
-            "id": row.id,
-            "product_name": row.product_name,
-            "stock": row.weight,
-            "centra_name": row.username,
-            "initial_price": price,
+            "id": product_data["id"],
+            "product_name": product_data["product_name"],
+            "stock": product_data["stock"],
+            "centra_name": product_data["centra_name"],
+            "initial_price": initial_price,
             "price": final_price,
             "expiry_time": expdayleft,
-            "status": row.status
+            "status": product_data["status"]
         })
+
+    # Special filter: if prid is provided, only return products matching that product ID
+    if prid:
+        results = [item for item in results if str(item["id"]) == str(prid)]
 
     return results
 
 def get_marketplace_items_by_centra(db: Session, centra_name: str, skip: int = 0, limit: int = 15):
     """Get marketplace items filtered by specific centra name"""
     
-    # Queries for individual products - only include available products from specific centra
+    # ✅ OPTIMIZED: Queries with JOINs to get pricing data in one go
     wet = db.query(
         models.WetLeaves.WetLeavesID.label("id"),
         models.WetLeaves.UserID.label("user_id"),
         models.WetLeaves.Expiration.label("expiration"),
         models.WetLeaves.Weight.label("stock"),
         models.WetLeaves.Status.label("status"),
-        literal_column("'Wet Leaves'").label("product_name")
+        literal_column("'Wet Leaves'").label("product_name"),
+        literal_column("1").label("product_type_id"),
+        models.CentraBaseSettings.InitialPrice.label("initial_price"),
+        models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+        models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+    ).select_from(models.WetLeaves
     ).join(models.User, models.WetLeaves.UserID == models.User.UserID
-    ).filter(
+    ).outerjoin(models.Products, models.Products.ProductName == "Wet Leaves"
+    ).outerjoin(models.CentraBaseSettings, and_(
+        models.CentraBaseSettings.UserID == models.WetLeaves.UserID,
+        models.CentraBaseSettings.ProductID == models.Products.ProductID
+    )).outerjoin(models.CentraSettingDetail, and_(
+        models.CentraSettingDetail.UserID == models.WetLeaves.UserID,
+        models.CentraSettingDetail.ProductID == models.Products.ProductID
+    )).filter(
         models.WetLeaves.Status == "Awaiting",
-        models.User.Username == centra_name
+        models.User.Username == centra_name,
+        models.WetLeaves.Expiration > func.now()
     )
 
     dry = db.query(
@@ -2807,11 +3750,24 @@ def get_marketplace_items_by_centra(db: Session, centra_name: str, skip: int = 0
         models.DryLeaves.Expiration.label("expiration"),
         models.DryLeaves.Processed_Weight.label("stock"),
         models.DryLeaves.Status.label("status"),
-        literal_column("'Dry Leaves'").label("product_name")
+        literal_column("'Dry Leaves'").label("product_name"),
+        literal_column("2").label("product_type_id"),
+        models.CentraBaseSettings.InitialPrice.label("initial_price"),
+        models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+        models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+    ).select_from(models.DryLeaves
     ).join(models.User, models.DryLeaves.UserID == models.User.UserID
-    ).filter(
+    ).outerjoin(models.Products, models.Products.ProductName == "Dry Leaves"
+    ).outerjoin(models.CentraBaseSettings, and_(
+        models.CentraBaseSettings.UserID == models.DryLeaves.UserID,
+        models.CentraBaseSettings.ProductID == models.Products.ProductID
+    )).outerjoin(models.CentraSettingDetail, and_(
+        models.CentraSettingDetail.UserID == models.DryLeaves.UserID,
+        models.CentraSettingDetail.ProductID == models.Products.ProductID
+    )).filter(
         models.DryLeaves.Status == "Awaiting",
-        models.User.Username == centra_name
+        models.User.Username == centra_name,
+        models.DryLeaves.Expiration > func.now()
     )
 
     flour = db.query(
@@ -2820,66 +3776,83 @@ def get_marketplace_items_by_centra(db: Session, centra_name: str, skip: int = 0
         models.Flour.Expiration.label("expiration"),
         models.Flour.Flour_Weight.label("stock"),
         models.Flour.Status.label("status"),
-        literal_column("'Powder'").label("product_name")
+        literal_column("'Powder'").label("product_name"),
+        literal_column("3").label("product_type_id"),
+        models.CentraBaseSettings.InitialPrice.label("initial_price"),
+        models.CentraSettingDetail.DiscountRate.label("discount_rate"),
+        models.CentraSettingDetail.ExpDayLeft.label("exp_day_left")
+    ).select_from(models.Flour
     ).join(models.User, models.Flour.UserID == models.User.UserID
-    ).filter(
+    ).outerjoin(models.Products, models.Products.ProductName == "Powder"
+    ).outerjoin(models.CentraBaseSettings, and_(
+        models.CentraBaseSettings.UserID == models.Flour.UserID,
+        models.CentraBaseSettings.ProductID == models.Products.ProductID
+    )).outerjoin(models.CentraSettingDetail, and_(
+        models.CentraSettingDetail.UserID == models.Flour.UserID,
+        models.CentraSettingDetail.ProductID == models.Products.ProductID
+    )).filter(
         models.Flour.Status == "Awaiting",
-        models.User.Username == centra_name
+        models.User.Username == centra_name,
+        models.Flour.Expiration > func.now()
     )
 
     # Combine queries with UNION ALL
-    union_query = union_all(wet, dry, flour).alias("products")
-
-    # Create an alias for the User table
-    user_alias = aliased(models.User)
-
-    # Create the full select statement with join to get username
-    stmt = select(
-        union_query.c.id,
-        union_query.c.user_id,
-        user_alias.Username.label("username"),
-        union_query.c.expiration,
-        union_query.c.product_name,
-        union_query.c.stock,
-        union_query.c.status
-    ).join(user_alias, union_query.c.user_id == user_alias.UserID
-    ).filter(
-        union_query.c.expiration > func.now(),  # Filter out expired products
-        user_alias.Username == centra_name  # Filter by centra name
-    ).order_by(func.random()).offset(skip).limit(limit)
-
+    combined_query = wet.union_all(dry).union_all(flour).order_by(func.random()).offset(skip).limit(limit)
+    
     # Execute the query
-    rows = db.execute(stmt).fetchall()
+    rows = combined_query.all()
     
     currentDate = datetime.now()
-    results = []
-
+    
+    # ✅ OPTIMIZED: Group products and collect discount conditions
+    products_map = {}
     for row in rows:
-        source = row.product_name
-        centra_base_settings = get_centra_base_settings_by_user_id_and_items(db, row.user_id, source)
-        discount_conditions = get_centra_setting_detail_by_user_id_and_item(db, row.user_id, source)
-
-        price = centra_base_settings[0].InitialPrice if centra_base_settings else 0
-        expdayleft = (row.expiration - currentDate).days
-
-        def calculate_discounted_price(expiry_left, data, initial_price):
-            applicable = [item for item in data if expiry_left <= item.ExpDayLeft]
-            if not applicable:
-                return initial_price
-            best = min(applicable, key=lambda x: x.ExpDayLeft).DiscountRate
-            return round(initial_price - (initial_price * best / 100))
-
-        final_price = calculate_discounted_price(expdayleft, discount_conditions, price)
+        product_key = (row.id, row.product_name)
+        
+        if product_key not in products_map:
+            products_map[product_key] = {
+                "id": row.id,
+                "product_name": row.product_name,
+                "stock": row.stock,
+                "centra_name": centra_name,
+                "expiration": row.expiration,
+                "status": row.status,
+                "initial_price": row.initial_price or 0,
+                "discount_conditions": []
+            }
+        
+        # Add discount condition if exists
+        if row.discount_rate is not None and row.exp_day_left is not None:
+            products_map[product_key]["discount_conditions"].append({
+                "DiscountRate": row.discount_rate,
+                "ExpDayLeft": row.exp_day_left
+            })
+    
+    # Calculate final prices
+    results = []
+    for product_data in products_map.values():
+        expdayleft = (product_data["expiration"] - currentDate).days
+        initial_price = product_data["initial_price"]
+        discount_conditions = product_data["discount_conditions"]
+        
+        # Calculate discounted price
+        applicable = [item for item in discount_conditions if expdayleft <= item["ExpDayLeft"]]
+        
+        if applicable:
+            best_discount = min(applicable, key=lambda x: x["ExpDayLeft"])["DiscountRate"]
+            final_price = round(initial_price - (initial_price * best_discount / 100))
+        else:
+            final_price = initial_price
 
         results.append({
-            "id": row.id,
-            "product_name": row.product_name,
-            "stock": row.stock,
-            "centra_name": row.username,
-            "initial_price": price,
+            "id": product_data["id"],
+            "product_name": product_data["product_name"],
+            "stock": product_data["stock"],
+            "centra_name": product_data["centra_name"],
+            "initial_price": initial_price,
             "price": final_price,
             "expiry_time": expdayleft,
-            "status": row.status
+            "status": product_data["status"]
         })
 
     return results

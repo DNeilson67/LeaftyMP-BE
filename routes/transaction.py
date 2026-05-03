@@ -5,9 +5,57 @@ from requests import Session
 from fastapi.responses import JSONResponse
 import crud
 from database import get_db
-from schemas.transaction_schemas import Transaction, TransactionCreate, TransactionUpdate
+from schemas.transaction_schemas import Transaction, TransactionCreate, TransactionUpdate, ShippingAddressUpdate, BulkMarketShipmentItem
+import schemas
+from .auth import verifier, cookie
+from pydantic import BaseModel
 
 router = APIRouter()
+
+# Schema for transaction calculation request
+class TransactionCalculationRequest(BaseModel):
+    items: List[BulkMarketShipmentItem]
+    
+class TransactionCalculationResponse(BaseModel):
+    subtotal: float
+    admin_fee: float
+    shipping_fee: float
+    total_amount: float
+    total_weight: float
+
+@router.post("/transaction/calculate", response_model=TransactionCalculationResponse, tags=["Transaction"])
+def calculate_transaction_totals(request: TransactionCalculationRequest, db: Session = Depends(get_db)):
+    """Calculate transaction totals including admin fee and shipping fee"""
+    try:
+        # Calculate subtotal from items
+        subtotal = sum(item.Weight * item.Price for item in request.items)
+        
+        # Calculate total weight
+        total_weight = sum(item.Weight for item in request.items)
+        
+        # Get admin fee from database
+        admin_settings = crud.get_admin_settings(db=db)
+        admin_fee = admin_settings.AdminFeeValue if admin_settings else 5000.0
+        
+        # Calculate shipping fee based on total weight (dummy calculation)
+        # You can adjust this formula based on your business logic
+        # For now: Rp 10,000 base + Rp 1,000 per kg
+        base_shipping = 10000.0
+        per_kg_rate = 1000.0
+        shipping_fee = base_shipping + (total_weight * per_kg_rate)
+        
+        # Calculate total
+        total_amount = subtotal + admin_fee + shipping_fee
+        
+        return TransactionCalculationResponse(
+            subtotal=subtotal,
+            admin_fee=admin_fee,
+            shipping_fee=shipping_fee,
+            total_amount=total_amount,
+            total_weight=total_weight
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error calculating transaction: {str(e)}")
 
 @router.post("/transaction/post", response_model=Transaction, tags=["Transaction"])
 def create_transaction(transaction: TransactionCreate, db: Session = Depends(get_db)):
@@ -94,6 +142,27 @@ def get_product_lock_status(product_type_id: int, product_id: int, db: Session =
             db=db,
             product_type_id=product_type_id,
             product_id=product_id
+        )
+        return result
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.patch("/transaction/{transaction_id}/shipping-address", response_class=JSONResponse, tags=["Transaction"], dependencies=[Depends(cookie)])
+def update_shipping_address(
+    transaction_id: str, 
+    shipping_update: ShippingAddressUpdate, 
+    session_data: schemas.SessionData = Depends(verifier),
+    db: Session = Depends(get_db)
+):
+    """Update shipping address for a transaction"""
+    try:
+        result = crud.update_transaction_shipping_address(
+            db=db,
+            transaction_id=transaction_id,
+            shipping_update=shipping_update,
+            customer_id=str(session_data.UserID)
         )
         return result
     except HTTPException as e:

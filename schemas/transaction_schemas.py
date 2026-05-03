@@ -56,16 +56,25 @@ class SubTransaction(SubTransactionBase):
 class TransactionCreate(BaseModel):
     CustomerID: UUID4
     sub_transactions: List[SubTransactionCreate]
-    # Removed TransactionStatus - will default to "Transaction Pending"
+    # Optional shipping address - if not provided, will use user's default location
+    ShippingLatitude: Optional[float] = None
+    ShippingLongitude: Optional[float] = None
+    ShippingAddress: Optional[str] = None
 
 class TransactionUpdate(BaseModel):
     TransactionStatus: Optional[str] = None
     sub_transactions: Optional[List[SubTransactionUpdate]] = None
+    ShippingLatitude: Optional[float] = None
+    ShippingLongitude: Optional[float] = None
+    ShippingAddress: Optional[str] = None
 
 class Transaction(BaseModel):
     TransactionID: UUID4
     CustomerID: UUID4
     TransactionStatus: str
+    ShippingLatitude: Optional[float] = None
+    ShippingLongitude: Optional[float] = None
+    ShippingAddress: Optional[str] = None
     CreatedAt: datetime
     sub_transactions: List[SubTransaction]
     class Config:
@@ -91,11 +100,20 @@ class SubTransactionDisplayBase(BaseModel):
 class TransactionDisplayBase(BaseModel):
     TransactionID: str
     TransactionStatus: str
+    ShippingLatitude: Optional[float] = None
+    ShippingLongitude: Optional[float] = None
+    ShippingAddress: Optional[str] = None
     CreatedAt: Optional[datetime]
     ExpirationAt: Optional[datetime]
     sub_transactions: List[SubTransactionDisplayBase]
     class Config:
         orm_mode = True
+
+# Shipping Address Update Schema
+class ShippingAddressUpdate(BaseModel):
+    ShippingLatitude: float
+    ShippingLongitude: float
+    ShippingAddress: str
 
 # Bulk Transaction Schemas
 class BulkMarketShipmentItem(BaseModel):

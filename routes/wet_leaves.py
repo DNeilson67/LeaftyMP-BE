@@ -5,6 +5,8 @@ from fastapi.responses import JSONResponse
 import crud
 from database import get_db
 from schemas.leaves_schemas import WetLeaves, WetLeavesCreate, WetLeavesUpdate, WetLeavesStatusUpdate
+from schemas.user_schemas import SessionData
+from routes.auth import verifier, cookie
 
 router = APIRouter()
 
@@ -23,15 +25,28 @@ def get_wet_leaves_id(wet_leaves_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="wet leaves not found")
     return wet_leaves
 
-@router.get("/wetleaves/get_by_user/{user_id}", response_model=List[WetLeaves])
-def get_wet_leaves_by_user(user_id: str, db: Session = Depends(get_db)):
+@router.get("/wetleaves/centra", response_model=List[WetLeaves], dependencies=[Depends(cookie)])
+def get_wet_leaves_for_centra(db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
+    """Get wet leaves for current centra user from session - CENTRA USERS ONLY"""
+    # Restrict access to centra users only (RoleID == 1)
+    if session_data.RoleID != 1:
+        raise HTTPException(status_code=403, detail="Access denied. This endpoint is only available for centra users.")
+    
+    # For centra users, UserID is the CentraID
+    user_id = session_data.UserID
     wet_leaves = crud.get_wet_leaves_by_user_id(db, user_id)
     if not wet_leaves:
         raise HTTPException(status_code=404, detail="wet leaves not found")
     return wet_leaves
 
-@router.get('/wetleaves/sum_weight_today/{user_id}')
-def get_sum_weight_wet_leaves_by_user_today(user_id: str, db: Session = Depends(get_db)):
+@router.get('/wetleaves/centra/sum_weight_today', dependencies=[Depends(cookie)])
+def get_sum_weight_wet_leaves_centra_today(db: Session = Depends(get_db), session_data: SessionData = Depends(verifier)):
+    """Get sum of wet leaves weight today for current centra user from session - CENTRA USERS ONLY"""
+    # Restrict access to centra users only (RoleID == 1)
+    if session_data.RoleID != 1:
+        raise HTTPException(status_code=403, detail="Access denied. This endpoint is only available for centra users.")
+    
+    user_id = session_data.UserID
     total_weight = crud.sum_weight_wet_leaves_by_user_today(db, user_id)
     return {"user_id": user_id, "total_weight_today": total_weight}
 

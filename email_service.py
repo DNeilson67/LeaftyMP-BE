@@ -203,39 +203,8 @@ class EmailService:
 def create_otp_email_body(otp_code: str, user_email: str, expiry_minutes: int = 10) -> str:
     """Create OTP verification email body matching the provided design"""
     
-    # Create multiple logo fallback options with better centering
-    logo_html = '''
-    <div style="width: 100%; text-align: center; margin-bottom: 20px;">
-        <div style="display: inline-block; margin: 0 auto;">
-            <img src="cid:leafty_logo" alt="Leafty Logo" style="display: block; margin: 0 auto;" 
-                 onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
-            <div style="display: none; background: linear-gradient(135deg, #0F7275 0%, #79B2B7 100%); border-radius: 50%; align-items: center; justify-content: center; color: white; font-size: 24px; font-weight: bold; margin: 0 auto;">L</div>
-        </div>
-    </div>
-    '''
-    
-    # Split OTP code into individual digits for styling
+    # Split OTP code into individual digits
     otp_digits = list(str(otp_code).zfill(6))  # Ensure 6 digits
-    
-    otp_boxes_html = ""
-    for digit in otp_digits:
-        otp_boxes_html += f"""
-        <div style="
-            display: inline-block;
-            width: 60px;
-            height: 80px;
-            background-color: #E6F7F1;
-            border: 2px solid #C0CD30;
-            border-radius: 12px;
-            text-align: center;
-            line-height: 80px;
-            font-size: 36px;
-            font-weight: bold;
-            color: #2C3E50;
-            margin: 0 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-        ">{digit}</div>
-        """
     
     html_body = f"""
     <!DOCTYPE html>
@@ -244,60 +213,90 @@ def create_otp_email_body(otp_code: str, user_email: str, expiry_minutes: int = 
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>OTP Verification - Leafty</title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600&display=swap');
+            * {{
+                font-family: 'Montserrat', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+            }}
+        </style>
     </head>
-    <body style="margin: 0; padding: 40px 20px; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fffe; color: #2C3E50; display: flex; justify-content: center; align-items: center; min-height: 100vh;">
-        <div style="max-width: 600px; width: 100%; background-color: white; border-radius: 20px; overflow: hidden; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);">
-            
-            <!-- Header with Logo -->
-            <div style="text-align: center; padding: 40px 30px 30px;">
-                {logo_html}
-            </div>
-            
-            <!-- Main Content -->
-            <div style="padding: 0 40px 40px; text-align: center;">
-                <h2 style="color: #2C3E50; margin: 0 0 20px; font-size: 28px; font-weight: 600;">
-                    OTP Verification
-                </h2>
-                
-                <p style="color: #7F8C8D; margin: 0 0 10px; font-size: 16px; line-height: 1.5;">
-                    Use this code to sign up to Leafty.
-                </p>
-                <p style="color: #7F8C8D; margin: 0 0 40px; font-size: 16px; line-height: 1.5;">
-                    This code will expire in {expiry_minutes} minutes
-                </p>
-                
-                <!-- OTP Code Display -->
-                <div style="margin: 40px 0; text-align: center;">
-                    {otp_boxes_html}
-                </div>
-                
-                <!-- Email Information -->
-                <div style="margin: 40px 0 30px; padding: 25px; background-color: #f8fffe; border-radius: 12px; border-left: 4px solid #79B2B7;">
-                    <p style="color: #2C3E50; margin: 0; font-size: 16px; line-height: 1.6;">
-                        This code will securely sign you up using<br/>
-                        <span style="color: #0F7275; font-weight: 600;">{user_email}</span>
-                    </p>
-                </div>
-                
-                <!-- Security Notice -->
-                <div style="margin-top: 30px; padding: 20px; background-color: #FFF9E6; border-radius: 8px; border: 1px solid #F39C12;">
-                    <p style="color: #E67E22; margin: 0; font-size: 14px; line-height: 1.5;">
-                        🔒 <strong>Security Notice:</strong><br/>
-                        Never share this code with anyone. Leafty will never ask for your OTP via phone or email.
-                    </p>
-                </div>
-                
-                <!-- Footer -->
-                <div style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #ECF0F1;">
-                    <p style="color: #95A5A6; font-size: 13px; margin: 0 0 10px; line-height: 1.4;">
-                        If you didn't request this email, you can safely ignore it.
-                    </p>
-                    <p style="color: #95A5A6; font-size: 12px; margin: 0; line-height: 1.4;">
-                        This is an automated email from Leafty. Please do not reply to this message.
-                    </p>
-                </div>
-            </div>
-        </div>
+    <body style="margin: 0; padding: 0; font-family: 'Montserrat', sans-serif; background-color: #F7FAFC;">
+        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #F7FAFC; padding: 56px 54px; font-family: 'Montserrat', sans-serif;">
+            <tr>
+                <td align="center">
+                    <table width="574.78" cellpadding="10" cellspacing="0" border="0" style="max-width: 574.78px; background-color: #F7FAFC; font-family: 'Montserrat', sans-serif;">
+                        <tr>
+                            <td align="center">
+                                <!-- Logo -->
+                                <img src="cid:leafty_logo" alt="Leafty Logo" style="width: 292px; height: 91px; display: block; margin-bottom: 30px;" />
+                                
+                                <!-- Title -->
+                                <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 24px; font-family: 'Montserrat', sans-serif;">
+                                    <tr>
+                                        <td align="center">
+                                            <div style="width: 419px; text-align: center; color: black; font-size: 32px; font-family: 'Montserrat', sans-serif; font-weight: 600; letter-spacing: 0.64px; margin-bottom: 16px;">
+                                                OTP Verification
+                                            </div>
+                                            <div style="width: 419px; text-align: center; color: #606060; font-size: 20px; font-family: 'Montserrat', sans-serif; font-weight: 500; letter-spacing: 0.40px; line-height: 1.5;">
+                                                Use this code to sign up to Leafty.<br/>
+                                                This code will expire in {expiry_minutes} minutes
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </table>
+                                
+                                <!-- OTP Code -->
+                                <table cellpadding="0" cellspacing="0" border="0" align="center" style="background: #DCEFEF; border-radius: 10px; margin: 40px auto; user-select: all; -webkit-user-select: all; -moz-user-select: all; font-family: 'Montserrat', sans-serif;">
+                                    <tr>
+                                        <td style="width: 81.39px; padding: 16.61px;">
+                                            <div style="text-align: center; color: black; font-size: 42px; font-family: 'Montserrat', sans-serif; font-weight: 600; letter-spacing: 0.84px; user-select: text; -webkit-user-select: text; -moz-user-select: text;">{otp_digits[0]}</div>
+                                        </td>
+                                        <td style="width: 81.39px; padding: 16.61px;">
+                                            <div style="text-align: center; color: black; font-size: 42px; font-family: 'Montserrat', sans-serif; font-weight: 600; letter-spacing: 0.84px; user-select: text; -webkit-user-select: text; -moz-user-select: text;">{otp_digits[1]}</div>
+                                        </td>
+                                        <td style="width: 81.39px; padding: 16.61px;">
+                                            <div style="text-align: center; color: black; font-size: 42px; font-family: 'Montserrat', sans-serif; font-weight: 600; letter-spacing: 0.84px; user-select: text; -webkit-user-select: text; -moz-user-select: text;">{otp_digits[2]}</div>
+                                        </td>
+                                        <td style="width: 81.39px; padding: 16.61px;">
+                                            <div style="text-align: center; color: black; font-size: 42px; font-family: 'Montserrat', sans-serif; font-weight: 600; letter-spacing: 0.84px; user-select: text; -webkit-user-select: text; -moz-user-select: text;">{otp_digits[3]}</div>
+                                        </td>
+                                        <td style="width: 81.39px; padding: 16.61px;">
+                                            <div style="text-align: center; color: black; font-size: 42px; font-family: 'Montserrat', sans-serif; font-weight: 600; letter-spacing: 0.84px; user-select: text; -webkit-user-select: text; -moz-user-select: text;">{otp_digits[4]}</div>
+                                        </td>
+                                        <td style="width: 81.39px; padding: 16.61px;">
+                                            <div style="text-align: center; color: black; font-size: 42px; font-family: 'Montserrat', sans-serif; font-weight: 600; letter-spacing: 0.84px; user-select: text; -webkit-user-select: text; -moz-user-select: text;">{otp_digits[5]}</div>
+                                        </td>
+                                    </tr>
+                                </table>
+                                
+                                <!-- Email Info -->
+                                <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top: 40px; font-family: 'Montserrat', sans-serif;">
+                                    <tr>
+                                        <td align="center">
+                                            <div style="width: 435px; text-align: center; margin-bottom: 40px; font-family: 'Montserrat', sans-serif;">
+                                                <span style="color: #606060; font-size: 20px; font-family: 'Montserrat', sans-serif; font-weight: 500; letter-spacing: 0.40px;">
+                                                    This code will securely sign you up using<br/>
+                                                </span>
+                                                <span style="color: #0F7275; font-size: 20px; font-family: 'Montserrat', sans-serif; font-weight: 500; letter-spacing: 0.40px; pointer-events: none; cursor: default;">
+                                                    {user_email}
+                                                </span>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    <tr>
+                                        <td align="center">
+                                            <div style="width: 435px; text-align: center; color: #B0B0B0; font-size: 14px; font-family: 'Montserrat', sans-serif; font-weight: 500; letter-spacing: 0.28px;">
+                                                If you didn't request this email, you can ignore it
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+        </table>
     </body>
     </html>
     """
@@ -316,18 +315,29 @@ def create_receipt_email_body(transaction_data: dict, customer_name: str) -> str
     </div>
     '''
     
-    # Calculate totals
+    # Calculate totals - MUST match invoice PDF exactly
     subtotal = 0
     total_items = 0
+    total_savings = 0
     
     for sub_tx in transaction_data['sub_transactions']:
         for shipment in sub_tx['market_shipments']:
-            subtotal += shipment['Price'] * shipment['Weight']
+            # Calculate subtotal based on InitialPrice (before discount)
+            initial_price = shipment.get('InitialPrice', shipment['Price'])
+            item_total = initial_price * shipment['Weight']
+            subtotal += item_total
+            
+            # Calculate discount savings
+            if initial_price != shipment['Price']:
+                discount_amount = (initial_price - shipment['Price']) * shipment['Weight']
+                total_savings += discount_amount
+            
             total_items += 1
     
-    # Admin fee (if applicable)
-    admin_fee = subtotal * 0.05  # 5% admin fee example
-    total_amount = subtotal + admin_fee
+    # Fixed fees (consistent with invoice PDF)
+    admin_fee = 5000
+    shipping_fee = 50000
+    total_amount = subtotal + admin_fee + shipping_fee - total_savings
     
     # Create items list HTML
     items_html = ""
@@ -415,9 +425,17 @@ def create_receipt_email_body(transaction_data: dict, customer_name: str) -> str
                         <span style="color: #666; font-size: 16px;">Subtotal ({total_items} items): </span>
                         <span style="color: #333; font-size: 16px; font-weight: 600;">Rp {subtotal:,}</span>
                     </div>
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #ddd;">
-                        <span style="color: #666; font-size: 16px;">Admin Fee (5%): </span>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                        <span style="color: #666; font-size: 16px;">Admin Fee: </span>
                         <span style="color: #333; font-size: 16px; font-weight: 600;">Rp {admin_fee:,}</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                        <span style="color: #666; font-size: 16px;">Shipping Fee: </span>
+                        <span style="color: #333; font-size: 16px; font-weight: 600;">Rp {shipping_fee:,}</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #ddd;">
+                        <span style="color: #E67E22; font-size: 16px;">Discount Savings: </span>
+                        <span style="color: #27AE60; font-size: 16px; font-weight: 600;">- Rp {total_savings:,}</span>
                     </div>
                     <div style="display: flex; justify-content: space-between;">
                         <span style="color: #0F7275; font-size: 20px; font-weight: 700;">Total Amount: </span>
@@ -446,7 +464,7 @@ def create_receipt_email_body(transaction_data: dict, customer_name: str) -> str
 def send_otp_email(to_email: str, otp_code: str, expiry_minutes: int = 10) -> bool:
     """Convenience function to send OTP email with FullLeaftyLogo.png"""
     email_service = EmailService()
-    subject = "🔐 Your OTP Code - Leafty Verification"
+    subject = "Your OTP Code - Leafty Verification"
     body = create_otp_email_body(otp_code, to_email, expiry_minutes)
     
     return email_service.send_simple_email(to_email, subject, body, embed_logo=True, logo_filename="FullLeaftyLogo.png")

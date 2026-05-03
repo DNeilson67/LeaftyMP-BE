@@ -34,3 +34,9 @@ class CityCreate(CityBase):
 
 class City(CityBase):
     user: Optional['User']
+
+class BatchLocationRequest(BaseModel):
+    centra_ids: list[str]
+    user_latitude: float
+    user_longitude: float
+
